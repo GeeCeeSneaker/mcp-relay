@@ -2,11 +2,11 @@
 
 ## 1. Status
 
-This document describes the **current minimum architecture hypothesis**. It is intentionally subject to replacement when WO-0001 produces evidence. It is not a requirement to preserve specific vendors/components when they fail the project goal.
+This document describes the **current minimum architecture hypothesis and responsibility boundaries**. Specific package choices are provisional. The project should preserve the external contract and security boundaries, not a particular vendor/component.
 
 ## 2. External contract
 
-Remote clients should see one stable endpoint:
+Remote clients should see one stable self-hosted MCP surface, initially:
 
 ```text
 https://<our-domain>/mcp
@@ -22,24 +22,24 @@ ChatGPT / MCP client
         | HTTPS + supported auth
         v
 +---------------- VPS ----------------+
-| Caddy                               |
+| TLS ingress                         |
 |   |                                 |
 |   v                                 |
 | MCP Gateway                         |
 |   |                                 |
 |   v                                 |
-| 127.0.0.1:<per-node-backend-port>   |
+| loopback/per-node backend           |
 |   |                                 |
-| rathole-server                      |
+| reverse-tunnel server               |
 +---|---------------------------------+
     | encrypted tunnel initiated by node
     v
-+-------------- Windows node ---------+
-| rathole-client                      |
++---------------- Node ---------------+
+| reverse-tunnel client               |
 |   |                                 |
 |   v                                 |
-| Supergateway                        |
-|   | stdio                           |
+| local MCP HTTP adapter              |
+|   | stdio where needed              |
 |   v                                 |
 | Desktop Commander                   |
 |   |                                 |
@@ -47,73 +47,80 @@ ChatGPT / MCP client
 +-------------------------------------+
 ```
 
-## 4. Component responsibilities
+The named starting candidates are Caddy, a lightweight MCP gateway, rathole, Supergateway and Desktop Commander. Candidate names do not create permanent architecture obligations.
 
-### Desktop Commander
-Owns local MCP tools and local execution. We do not reimplement its file/process/terminal capability unless a concrete missing requirement appears.
+## 4. Responsibility boundaries
 
-### Supergateway
-Adapts Desktop Commander's stdio MCP transport to Streamable HTTP for the tunnel/gateway path. It exists only while Desktop Commander does not provide the required HTTP endpoint directly.
+### Desktop Commander / local capability provider
+Owns local MCP tools and execution. MCPRelay should not reimplement file/process/terminal capabilities already supplied upstream.
 
-### rathole
-Provides outbound reverse tunneling, NAT traversal, encryption/authentication, heartbeat/reconnect primitives and a stable loopback backend on the VPS. It replaces the need for WireGuard or a custom WebSocket relay for the current single-application use case.
+### Local MCP HTTP adapter
+Adapts upstream stdio MCP to Streamable HTTP only when the selected local provider does not expose the required HTTP transport itself. Starting candidate: Supergateway. Remove this layer if it becomes redundant.
 
-### MCP Gateway
-Candidate responsibility: expose/aggregate backend MCP servers and provide a ChatGPT-compatible authentication flow. `R0Wi/mcp-gateway` is the current candidate, but WO-0001 must prove compatibility before it is treated as accepted architecture.
+### Reverse connectivity
+Provides outbound NAT traversal, authenticated encryption, heartbeat/reconnect and a stable VPS-local backend. Starting candidate: rathole. It replaces the need for a general VPN for the current one-application requirement.
 
-If the candidate fails, the implementation must stop and report the exact incompatibility. Substituting a heavier gateway or writing a custom one requires a new/updated Work Order.
+### MCP gateway/auth
+Exposes one or more backend MCP servers through a client-compatible standard MCP/authentication surface. Starting candidate: `R0Wi/mcp-gateway`.
 
-### Caddy
-Terminates public TLS and maintains certificates. It should not become an application platform.
+If a candidate fails, the development team should first isolate the failing responsibility, then try bounded configuration correction, then evaluate a simpler/equivalent **same-responsibility replacement**. This does not require per-step Reviewer approval if total permanent architecture/trust scope does not grow. Record the comparison and decision in ADR/DEVLOG.
+
+Adding a separate auth service, custom MCP protocol, policy platform, control-plane database or other new responsibility is architecture escalation.
+
+### Public TLS ingress
+Owns public HTTPS/certificate lifecycle and minimal reverse proxying. Starting candidate: Caddy. If the accepted gateway can own TLS/certificate lifecycle more simply, removing Caddy is preferred over preserving an unnecessary layer.
 
 ## 5. Network boundaries
 
 Initial target:
-
-- Public VPS: TCP/443 for HTTPS MCP ingress.
-- Public VPS: only the minimum rathole listener/control port(s) required for node tunnels.
-- Per-node rathole backend ports bind to VPS loopback only where supported.
-- Windows node: no public inbound MCP port and no router port-forward requirement.
-- Supergateway should bind only to the local interface needed by rathole, preferably loopback.
+- public VPS: TCP/443 for HTTPS MCP ingress;
+- public VPS: only the minimum reverse-tunnel listener/control port(s) required for node connectivity;
+- per-node backend ports bind to VPS loopback where supported;
+- node: no public inbound MCP port and no router port-forward requirement;
+- local MCP HTTP adapter binds only to loopback/local interface required by the tunnel.
 
 ## 6. Authentication/encryption
 
-- Client -> VPS: HTTPS plus the authentication flow required by the selected MCP gateway/ChatGPT integration.
-- Node -> VPS: rathole encrypted/authenticated transport (TLS/Noise or equivalent supported secure mode selected during implementation).
-- Gateway -> rathole backend: loopback on the VPS; no second public auth layer is required for the initial private deployment.
+- Client -> VPS: HTTPS plus the authentication flow required by the accepted MCP gateway/ChatGPT integration.
+- Node -> VPS: authenticated encrypted reverse-tunnel transport.
+- Gateway -> node backend: VPS loopback/local backend path; no duplicate public auth layer is required for the initial private deployment.
 
-Secrets are injected at deployment/runtime and must not be committed.
+Secrets are injected at deployment/runtime and never committed.
 
 ## 7. Multi-node shape
 
-The expected extension is configuration, not architecture:
+Multi-node is expected to be a routing/configuration extension, not a new control-plane service:
 
 ```text
-node-01 -> VPS loopback backend A
-node-02 -> VPS loopback backend B
-node-03 -> VPS loopback backend C
+node-01 -> VPS backend A
+node-02 -> VPS backend B
+node-03 -> VPS backend C
 ```
 
-The gateway owns how these are presented/namespaced to the remote MCP client. The exact namespace scheme is not frozen until one-node compatibility is proven.
+The team must experimentally select the simplest ChatGPT-compatible presentation: gateway-native aggregation/namespacing, stable per-node routes, or another standard-compatible mechanism. Static/small-fleet configuration is preferred until proven inadequate.
 
 ## 8. Windows packaging direction
 
-Do not implement packaging before the end-to-end stack works. Expected later direction is a self-contained node package containing pinned runtime/dependencies, a small config surface and one OS service entry. Online `npx @latest` installation is not a production target.
+Do not package an unproven runtime. After P1/P2, produce a self-contained pinned Windows distribution with minimal user configuration and predictable service lifecycle. Normal packaged operation must not require Docker Desktop or mutable `npx @latest` resolution.
 
 ## 9. Linux direction
 
-Linux should reuse the same application-level chain and configuration semantics wherever practical, replacing Windows service management with systemd only when the Windows contract is known. No separate Linux gateway architecture is planned.
+Linux reuses the same public gateway/tunnel/application contract. Platform differences should be confined primarily to packaging/service management and unavoidable OS-specific Desktop Commander behavior. No separate Linux gateway architecture is planned.
 
-## 10. Explicitly not in initial architecture
+## 10. Explicitly absent unless evidence requires them
 
-- WireGuard;
-- ToolHive;
-- HAProxy;
+- general WireGuard/private LAN;
+- ToolHive/enterprise policy platform;
+- HAProxy as an additional routing layer;
 - Docker Desktop on nodes;
-- local Caddy/TLS/OAuth on each node;
+- local TLS/OAuth stacks on every node;
 - Kubernetes;
 - web admin UI;
 - device database/control plane;
 - custom WebSocket/device relay protocol.
 
-These may be reconsidered only when an observed requirement justifies them.
+These are not permanently forbidden; they require an observed need and architecture escalation because each adds a new responsibility/operational surface.
+
+## 11. Continuous simplification
+
+At every milestone the team and Reviewer must ask whether any adapter/proxy/service can now be removed. The desired architecture is the fewest permanent layers that satisfy the current requirements and acceptance tests.
