@@ -1,78 +1,33 @@
 # Current Execution Plan
 
-> This file answers only: what is authorized now, why, what evidence is required, and what is blocked. Long-term work belongs in `ROADMAP.md`.
+## Program status
 
-## Current phase
+The complete v1 program in `MASTER_IMPLEMENTATION_PLAN.md` is **AUTHORIZED**. Development does not stop after WO-0001 waiting for a new instruction.
 
-**M1 preparation / WO-0001 — Windows -> VPS -> ChatGPT minimal end-to-end PoC**
+Current earliest phase: `P0 -> P1`, with later phases available automatically when their entry/exit dependencies are satisfied.
 
-Current implementation status: `NOT_STARTED`.
-Current review status: `PENDING_IMPLEMENTATION`.
+## Current priority
 
-## Current objective
+1. Prove the highest-risk compatibility boundaries first: local MCP transport, reverse tunnel, gateway/auth and actual ChatGPT connectivity.
+2. Reach a real Windows single-node end-to-end call before investing in packaging/platform work.
+3. Once P1 works, stabilize/reproduce it, package Windows, add multi-node, then Linux, then run full v1 qualification.
 
-Prove or falsify the smallest candidate architecture using existing components before investing in packaging, fleet management or Linux support.
+## Development-team decision rule
 
-Candidate chain:
+The team should make ordinary engineering decisions itself. Do not wait for Project Manager approval to:
+- fix bugs;
+- refactor;
+- add tests/docs/scripts;
+- choose exact package versions;
+- replace a failing candidate with an equivalent same-responsibility component;
+- proceed to the next authorized phase after acceptance evidence passes.
 
-```text
-ChatGPT
- -> HTTPS/TLS
- -> Caddy
- -> candidate MCP Gateway + auth
- -> VPS loopback per-node backend
- -> rathole-server
- -> encrypted reverse tunnel
- -> rathole-client
- -> Supergateway
- -> Desktop Commander
- -> Windows test operation
-```
-
-## Authorized work
-
-Only WO-0001 is authorized for runtime implementation.
-
-The implementer may:
-- create the minimal repository/config/test skeleton required by WO-0001;
-- pin and configure the approved candidate components;
-- run local/VPS compatibility and end-to-end tests within its execution authorization;
-- produce sanitized evidence/resource measurements;
-- open a PR and submit an exact candidate head for review.
-
-## Explicitly not authorized in WO-0001
-
-- WireGuard;
-- ToolHive/HAProxy;
-- custom WebSocket/tunnel/auth/MCP server;
-- Windows installer/service wrapper beyond what is strictly necessary to run the PoC;
-- Linux implementation;
-- multi-node implementation;
-- web UI/device dashboard;
-- database/control plane;
-- automatic updater;
-- broad permission/RBAC system.
-
-## Critical compatibility gate
-
-The current lightweight gateway candidate must be tested against the actual remote-MCP authentication/client requirements. If it cannot support the required ChatGPT path with a bounded configuration change, **stop and report the incompatibility**. Do not silently add a heavier gateway or custom auth layer.
+Escalate only when `DEVELOPMENT_MANAGEMENT.md` Level-B/C triggers are crossed.
 
 ## Reviewer boundary
 
-The Project Manager/Reviewer will inspect repository state, PR/Issue/CI and submitted evidence only. The Reviewer is not authorized to log into or operate the Windows node or VPS for this work order.
+Reviewer monitors GitHub state and evidence, performs independent milestone/exact-head review, and may reprioritize/reopen work. Reviewer is not authorized to operate the Windows node or VPS without explicit Owner authorization.
 
-Missing local/runtime evidence is therefore a developer/Owner-validation blocker, not permission for the Reviewer to generate that evidence personally.
+## Immediate handoff to development team
 
-## Next review trigger
-
-Review starts only when the implementer supplies:
-- WO-0001 candidate status;
-- PR number and exact head SHA;
-- local test results;
-- GitHub CI results if CI exists;
-- sanitized end-to-end evidence;
-- dependency versions;
-- PC/VPS resource measurements;
-- known deviations/blockers.
-
-The next Work Order will be issued only after that review.
+Read the nine documents listed in README, then execute P0/P1. Existing WO-0001 is the first vertical-slice work package; WO-0002..WO-0006 define the rest of the program. The team may create its own finer-grained Issues/PRs.

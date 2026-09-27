@@ -2,64 +2,60 @@
 
 MCPRelay is a self-hosted remote MCP relay for exposing capabilities of computers we own to remote AI agents through a single authenticated MCP endpoint.
 
-The initial product goal is concrete: **allow ChatGPT to connect to MCPRelay and operate a Windows computer with capabilities comparable to the current Desktop Commander remote workflow, without relying on a third-party relay service.**
+The v1 product goal is concrete: **ChatGPT can connect to our own MCPRelay endpoint and operate Windows/Linux machines with the practical local file/terminal/process capabilities currently obtained through Desktop Commander Remote, without depending on a third-party relay service.**
 
-The project is private/self-use first. Windows is the first implementation target; Linux parity is planned after the Windows path is proven.
+Windows is the first implementation target; Linux parity is part of the v1 program after the Windows runtime contract is proven.
 
-## Current architecture hypothesis
+## Current minimum architecture hypothesis
 
 ```text
-ChatGPT / other MCP client
+ChatGPT / MCP client
         |
-     HTTPS + OAuth
+     HTTPS + auth
         |
       Caddy                 VPS
         |
    MCP Gateway
         |
-  127.0.0.1:<node-port>
+  loopback backend
         |
-   rathole-server
+   reverse tunnel server
         |
    encrypted outbound tunnel
         |
-   rathole-client           Windows node
+   reverse tunnel client    Node
         |
    Supergateway
         |
    Desktop Commander
         |
-   local OS / files / processes / terminal
+ local files/processes/terminal
 ```
 
-This is a hypothesis to be validated, not architecture that must be preserved at all costs. Every permanent component must justify its existence. The first implementation work order is specifically intended to prove or disprove this minimal stack.
+Component names are provisional. Responsibilities and external contracts matter more than preserving a specific package. The development team may replace a candidate component with a simpler/equivalent component inside the same responsibility boundary when evidence justifies it; architecture/trust-boundary expansion requires escalation.
 
-## Non-negotiable project rules
+## Non-negotiable rules
 
-1. **Minimal solution first.** No component, abstraction, protocol, service, database, UI, VPN, policy layer or orchestration layer is added without a concrete demonstrated need.
-2. **Repository is the source of truth.** Material instructions, scope changes, implementation handoffs and review decisions must be recorded in GitHub/repository documents.
-3. **Reviewer does not operate machines.** Unless the Owner gives explicit authorization for a specific action, the Project Manager/Reviewer may inspect repository state, PRs, issues, CI and submitted evidence, but must not operate the developer's local machine, Windows services, VPS, shell or deployment environment.
-4. **Implementer does not self-approve.** Implementation may be reported as candidate-ready; only independent review may mark work verified.
-5. **Exact-head review.** Acceptance is tied to an exact commit/PR head and its evidence/CI, not to an informal statement that work is finished.
-6. **No secrets in Git.** Passwords, tokens, private keys, cookies, private endpoints containing credentials and raw sensitive local-machine data must never be committed.
-7. **Use existing software before writing infrastructure.** Custom MCP transports, tunnels, auth servers and control planes require explicit evidence that mature existing components are insufficient.
+1. **Minimal solution first.** Every permanent component/process/abstraction must solve a current demonstrated requirement.
+2. **Repository is the durable authority.** Architecture, execution plan, important implementation decisions, PRs, CI/evidence and handoffs must be reconstructable from GitHub.
+3. **Development team is autonomous inside the frozen execution envelope.** The team may decompose work, create Issues/PRs, adjust implementation order, fix defects, refactor and choose equivalent dependencies without waiting for per-step Reviewer approval.
+4. **Escalate architecture, not routine engineering.** New public trust boundaries, persistent services/databases, custom protocols, VPN/control planes, materially broader machine exposure or Owner-risk actions require documented escalation.
+5. **Reviewer does not operate machines.** Without explicit Owner authorization for a specific action, the Project Manager/Reviewer may inspect repository/PR/Issue/CI/evidence but must not operate the local PC or VPS.
+6. **Project verification remains independent.** Team progress/merge decisions are not the same as final project acceptance; release candidates receive exact-head independent review.
+7. **No secrets in Git.** Passwords, tokens, private keys, cookies and sensitive machine data never enter the repository.
 
-## Project documents
+## Start here
 
-- `docs/project/PROJECT_CHARTER.md` — purpose, boundaries and success criteria.
-- `docs/project/ENGINEERING_PRINCIPLES.md` — mandatory engineering/minimalism rules.
-- `docs/project/SYSTEM_ARCHITECTURE.md` — current architecture hypothesis and interfaces.
-- `docs/project/DEVELOPMENT_MANAGEMENT.md` — roles, change control, handoff and review governance.
-- `docs/project/WORK_ORDER_PROTOCOL.md` — canonical task flow.
-- `docs/project/ROADMAP.md` — staged delivery plan.
-- `docs/project/CURRENT_EXECUTION_PLAN.md` — only the currently authorized work.
-- `docs/project/RESOURCE_BUDGETS.md` — PC/VPS resource budgets and measurement rules.
-- `docs/adr/ADR-0001-MINIMAL-REMOTE-MCP-ARCHITECTURE.md` — current architecture decision record.
-- `docs/work_orders/WO-0001-WINDOWS-CHATGPT-E2E-POC.md` — first implementation work order.
-- `docs/DEVLOG.md` — durable development/review log.
+A new development team should read, in order:
 
-## Development flow
+1. `docs/project/PROJECT_CHARTER.md`
+2. `docs/project/SYSTEM_REQUIREMENTS.md`
+3. `docs/project/ENGINEERING_PRINCIPLES.md`
+4. `docs/project/SYSTEM_ARCHITECTURE.md`
+5. `docs/project/MODULE_DESIGN.md`
+6. `docs/project/MASTER_IMPLEMENTATION_PLAN.md`
+7. `docs/project/ACCEPTANCE_TEST_PLAN.md`
+8. `docs/project/DEVELOPMENT_MANAGEMENT.md`
+9. `docs/project/RESOURCE_BUDGETS.md`
 
-`Work Order -> implementation branch/PR -> tests/evidence -> CANDIDATE_READY -> exact-head independent review -> VERIFIED or REOPENED`
-
-Chat discussion can shape decisions, but significant executable work must be written into the repository before it is treated as authorized project work.
+The entire v1 execution program in `MASTER_IMPLEMENTATION_PLAN.md` is pre-authorized. Phase Work Orders under `docs/work_orders/` are durable handoff/checklist artifacts, not gates requiring Reviewer permission between every step.

@@ -1,158 +1,133 @@
 # Development Management Handbook
 
-This file is the long-lived governance entry point for MCPRelay. Repository state is authoritative over transient chat/terminal context.
+## 1. Governance model
 
-## 1. Roles
+MCPRelay uses **bounded team autonomy**, not per-task command-and-control. Project architecture, trust boundaries, v1 requirements and acceptance criteria are frozen enough for a competent development team to execute from start to finish. The team should make ordinary engineering decisions itself.
+
+Repository state is authoritative over transient chat/terminal context.
+
+## 2. Roles
 
 ### Owner
-
-The Owner defines product goals, trust assumptions and project-level authorization. The Owner may change architecture/scope and may explicitly authorize local/deployment operations.
+Owns product direction, acceptable trust/risk, credentials/infrastructure authority and final material architecture decisions.
 
 ### Project Manager / Independent Reviewer
+Owns project-level requirements, architecture boundaries, acceptance contract and independent review. May update scheduling/priorities based on repository evidence.
 
-Responsibilities:
+**Permanent execution boundary:** without explicit Owner authorization for a specific action, Reviewer must not operate the local PC/VPS, run local shell commands, install/upgrade software, start/stop services, change firewall/network/deployment configuration or generate missing runtime evidence personally.
 
-- maintain project charter/roadmap/current plan;
-- write/freeze Work Orders and acceptance contracts;
-- inspect repository commits, branches, PRs, Issues, CI and submitted evidence;
-- perform exact-head independent review;
-- issue `PASS / PASS_WITH_CONDITIONS / REOPENED / FAIL` decisions;
-- publish the next authorized work.
+### Development Team
+Owns implementation execution inside `MASTER_IMPLEMENTATION_PLAN.md`:
+- task decomposition and scheduling;
+- branches/Issues/PRs;
+- implementation/refactoring/bug fixing;
+- same-responsibility dependency selection/substitution;
+- tests and runtime evidence;
+- documentation/handoffs;
+- ordinary merges according to CI/repository discipline;
+- moving to later pre-authorized phases when exit criteria pass.
 
-**Permanent authority boundary:** without explicit Owner authorization for a specific action, the Reviewer must not operate the local PC/VPS or act as an implementer. This prohibition includes local shell/terminal commands, file edits outside GitHub, starting/stopping services, installing/upgrading software, changing firewall/network configuration, deploying to the VPS, or producing local runtime evidence personally.
+The team does not need Reviewer approval for every C0/C1 implementation step.
 
-Reading task execution state and evidence from the repository/PR/Issue/CI is authorized. Writing project management documents, review findings and Work Orders in the repository is authorized.
+## 3. Authority levels
 
-### Implementer / Development Agent
+### A — autonomous
+No approval required before action:
+- implementation/refactor/tests/docs;
+- scripts/config templates;
+- dependency patch/minor updates with compatibility testing;
+- replacing a candidate component with an equivalent component inside the same logical responsibility, when total architecture does not expand;
+- changing internal file layout/APIs;
+- issue/PR decomposition;
+- phase ordering/parallelism consistent with dependencies;
+- deleting unnecessary layers/code;
+- continuing to the next pre-authorized phase after exit criteria are recorded.
 
-Responsibilities:
+Record material component substitutions in ADR/DEVLOG.
 
-- implement only frozen/authorized Work Order scope;
-- run required local tests/deployment probes when the execution environment grants it permission;
-- submit code/config/docs/evidence;
-- report exact commit SHA and CI status;
-- disclose blockers, deviations and unresolved risks.
+### B — architecture escalation
+Pause the affected design choice and request review before implementing:
+- new persistent service category;
+- new database/control plane/message broker;
+- general VPN/private network;
+- custom MCP/auth/tunnel protocol;
+- materially new public endpoint/trust boundary;
+- enterprise RBAC/policy platform;
+- architecture that materially increases resource/ops burden to solve a local incompatibility.
 
-The Implementer does **not** decide that its own work is verified/accepted.
+Unrelated authorized work may continue.
 
-## 2. Repository as source of truth
+### C — Owner authorization
+Required before:
+- destructive/irreversible infrastructure or user-data action;
+- exposing new sensitive local services/data publicly;
+- weakening agreed authentication/encryption;
+- new paid external service commitment;
+- use/change of Owner credentials/secrets outside already authorized deployment workflow;
+- material product-scope change.
 
-Material work instructions must exist in `docs/work_orders/` and normally have a linked GitHub Issue/PR.
+## 4. Progress states
 
-Important state must not exist only in chat, terminal history or an agent scratchpad. If a decision changes scope/architecture/acceptance criteria, the governing repository artifact must be updated.
+For phase/work-package tracking use:
+`PLANNED / IN_PROGRESS / DEV_ACCEPTED / BLOCKED / PROJECT_REVIEW / PROJECT_VERIFIED / REOPENED`.
 
-## 3. Work lifecycle
+`DEV_ACCEPTED` means the development team believes the documented acceptance tests pass and may continue to dependent pre-authorized work. It is not independent project verification.
 
-Canonical flow:
+Reviewer can later mark `PROJECT_VERIFIED` or `REOPENED` at milestone/release checkpoints.
 
-```text
-OPEN -> IN_PROGRESS -> REVIEW -> VERIFIED
-          |              |
-          v              v
-       BLOCKED        REOPENED -> IN_PROGRESS
-```
+## 5. Review cadence
 
-Implementers may move work to `IN_PROGRESS`, `BLOCKED` or `REVIEW`/candidate-ready. Only the independent Reviewer may mark a work order `VERIFIED` or issue formal PASS/FAIL review decisions.
+Independent Reviewer review is expected at meaningful integration points, especially:
+- first real ChatGPT E2E path;
+- Windows packaged runtime;
+- multi-node contract;
+- Linux parity;
+- v1 release candidate;
+- any Level-B/C escalation.
 
-`Implementation complete` is never synonymous with `Review passed`.
+The team does not need to stop all engineering while a non-blocking review is pending. Reviewer findings that invalidate an accepted foundation become P0 remediation and downstream work must be reconciled.
 
-## 4. Change classes
+## 6. PR/merge discipline
 
-### C0 — documentation/status only
+- PRs should reference phase/work package and acceptance evidence.
+- Exact versions/important runtime evidence belong in repository docs or PR/Issue discussion.
+- Prefer peer review when multiple developers are available.
+- A solo implementation agent may merge pre-authorized C0/C1 work after required CI/evidence is recorded if repository protection permits; this is still only `DEV_ACCEPTED`, not independent verification.
+- Do not merge known secret leakage, auth bypass or architecture-escalation changes without resolution.
 
-No runtime/architecture change. Normal repository review discipline applies.
+## 7. Handoff standard
 
-### C1 — implementation/configuration
+Material handoff records:
+- objective/phase;
+- exact commit/PR;
+- components/versions;
+- what changed;
+- tests/CI;
+- runtime/E2E evidence;
+- resource evidence when relevant;
+- current state;
+- blockers/known issues;
+- next recommended actions;
+- scope/architecture deviations.
 
-Does not change the accepted public contract or architecture boundaries. Requires code/config + tests + DEVLOG + Work Order handoff as applicable.
+Do not leave critical state only in chat or terminal history.
 
-### C2 — interface/operational contract
+## 8. Minimalism review
 
-Changes public MCP behavior, authentication contract, node enrollment/config semantics, dependency role or resource acceptance contract. Requires governing docs and acceptance criteria update before implementation is treated as authorized.
+At each integration PR/milestone ask:
+- What permanent process/dependency was added?
+- Could an existing component own this responsibility?
+- Can any prior layer now be removed?
+- Did a compatibility workaround become unnecessary architecture?
+- Did we write custom code for commodity infrastructure?
+- Can config/scripts be simpler?
 
-### C3 — architecture/governance
-
-Adds/replaces a core architecture layer, custom protocol, database/control plane, VPN, major trust-boundary change, lifecycle/governance change or platform boundary. Requires Owner/Project Manager authorization and ADR/management-document update before implementation.
-
-## 5. Branch and PR discipline
-
-After the initial governance bootstrap, implementation should normally occur on a dedicated branch and enter review through a PR.
-
-A review decision must name the exact PR head SHA. If the head changes after review, the previous approval does not automatically carry forward.
-
-Do not approve uncommitted worktree state or a developer's narrative in place of committed code/evidence.
-
-## 6. Completion handoff
-
-At candidate-ready handoff, the implementer must report at minimum:
-
-- Work Order ID;
-- exact commit SHA(s) and PR number;
-- files/components changed;
-- dependency versions changed/introduced;
-- tests executed and results;
-- local validation separately from GitHub Actions validation;
-- end-to-end evidence required by the Work Order;
-- resource measurements when required;
-- DEVLOG update;
-- implementation status: `CANDIDATE_READY` or `BLOCKED`;
-- review status: `PENDING_REVIEW`;
-- known open issues/deviations;
-- explicit statement of any scope not completed.
-
-Never report local tests as GitHub CI or vice versa.
-
-## 7. Independent review
-
-Reviewer checks, in order:
-
-1. exact Work Order and scope;
-2. exact PR/head SHA and diff;
-3. architecture/minimalism impact;
-4. correctness and protocol/auth boundaries;
-5. tests and CI;
-6. supplied runtime evidence/provenance;
-7. resource budget impact;
-8. documentation/handoff completeness.
-
-Review decisions:
-
-- `PASS` — acceptance criteria are satisfied at the exact reviewed head.
-- `PASS_WITH_CONDITIONS` — accepted only with explicitly stated non-blocking follow-up; must not hide a missing core acceptance criterion.
-- `REOPENED` — candidate is not accepted and a bounded remediation is required.
-- `FAIL` — approach does not satisfy the contract or should be abandoned.
-
-Substantial new work discovered during review should become a new Work Order rather than growing the current PR without bound.
-
-## 8. Minimalism gate
-
-Every PR review must identify:
-
-- permanent processes/components added or removed;
-- new runtime dependencies;
-- duplicated responsibilities;
-- custom code replacing existing infrastructure;
-- temporary spike artifacts that should be deleted;
-- whether the current milestone can be met with fewer layers.
-
-Unnecessary complexity is a valid blocking review finding.
+Unnecessary complexity can be a blocking Reviewer finding even if functionality works.
 
 ## 9. Security/repository hygiene
 
-Never commit credentials, API tokens, OAuth secrets, private keys, cookies, real private configuration, sensitive machine inventories or raw local data captured only for testing.
+Secrets, private keys, auth tokens, cookies and sensitive machine data stay out of Git. Sanitized evidence must be sufficient to verify boundaries/results.
 
-Evidence must be sanitized while remaining sufficient to show what was tested.
+## 10. Final Definition of Done
 
-## 10. Definition of Done
-
-A milestone/work order is done only when:
-
-- frozen acceptance criteria are met;
-- implementation is committed;
-- required tests/CI are green or explicitly dispositioned;
-- required runtime evidence exists;
-- resource budgets were checked when applicable;
-- management/current-state docs are consistent with HEAD;
-- DEVLOG is updated;
-- independent exact-head review is PASS/PASS_WITH_CONDITIONS;
-- the Work Order is marked VERIFIED by the Reviewer.
+v1 is complete only when `P6` acceptance passes on an exact release head, actual ChatGPT proof exists, docs/reproducibility/resource/minimalism checks are complete and independent Reviewer records `PROJECT_VERIFIED` or explicit `PASS_WITH_CONDITIONS`.

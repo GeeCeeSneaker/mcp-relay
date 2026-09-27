@@ -1,93 +1,56 @@
-# Repository Work-Order Protocol
+# Work Package / Work Order Protocol
 
 ## 1. Purpose
 
-All material development/deployment/research instructions for MCPRelay must flow through the repository. Chat can discuss decisions, but executable project work is not considered authorized until it is represented by a repository Work Order or an explicit amendment to one.
+Work Orders are durable handoff/checklist artifacts, **not mandatory Reviewer approval gates between every development step**.
 
-## 2. Canonical path
+`MASTER_IMPLEMENTATION_PLAN.md` pre-authorizes the v1 program. The development team may create finer-grained GitHub Issues/PRs as needed without waiting for new formal Work Orders.
 
-```text
-docs/work_orders/WO-XXXX-<short-name>.md
-```
+## 2. Canonical use
 
-Work Orders remain in Git after completion. Do not rewrite history to hide failed approaches.
+Use `docs/work_orders/WO-XXXX-<name>.md` for milestone-size packages, cross-agent handoffs or architecture-sensitive work. Routine bugs/refactors may be GitHub Issues/PRs only.
 
 ## 3. Required fields
 
-Every Work Order must state:
+A Work Order should state objective, scope, dependencies, required behavior, non-goals, acceptance/evidence, resource expectations where relevant, escalation conditions and completion handoff.
 
-- Work Order ID;
-- Status;
-- Priority;
-- Change Class;
-- objective;
-- governing documents/context;
-- baseline/dependencies;
-- required tasks;
-- explicit non-goals;
-- required tests/evidence;
-- resource measurement requirements where relevant;
-- acceptance criteria;
-- expected repository artifacts;
-- blocking/stop conditions;
-- completion handoff requirements.
+## 4. Team autonomy
 
-## 4. Status semantics
+Within a pre-authorized Work Order/phase the team can independently:
+- decompose tasks;
+- reorder/parallelize work;
+- select implementation details;
+- fix defects;
+- substitute equivalent same-responsibility dependencies;
+- create/merge ordinary implementation PRs;
+- mark the package `DEV_ACCEPTED` when acceptance evidence passes;
+- proceed to dependent pre-authorized packages.
 
-- `OPEN` — authorized and not started.
-- `IN_PROGRESS` — implementation active.
-- `BLOCKED` — implementer cannot proceed within the frozen contract.
-- `REVIEW` — candidate submitted; exact commit/PR head must be named.
-- `VERIFIED` — independent Reviewer accepted the exact candidate.
-- `CANCELLED` — explicitly withdrawn.
+## 5. Escalation
 
-Only the independent Reviewer may set `VERIFIED`.
+Follow `DEVELOPMENT_MANAGEMENT.md` Authority Levels. Level-B/C decisions require escalation; do not hide architecture growth in a routine PR.
 
-## 5. Scope discipline
+## 6. Review
 
-One Work Order should target one coherent objective. A compatibility failure must not trigger unbounded substitutions.
+Reviewer reads the governing requirements/package and inspects exact repository/PR/CI/evidence. Reviewer does not operate the developer's PC/VPS to compensate for missing evidence.
 
-If a task would require:
+Reviewer outcomes: `PROJECT_VERIFIED / PASS_WITH_CONDITIONS / REOPENED / FAIL`.
 
-- a new core component not already authorized;
-- a new custom protocol/service;
-- a trust-boundary change;
-- a VPN/control plane/database/UI not in scope;
-- a materially different public MCP/auth contract;
+## 7. Completion handoff template
 
-then stop, record evidence and request a Work Order amendment/new Work Order.
-
-## 6. Developer completion protocol
-
-Before moving to `REVIEW`, the implementer must:
-
-1. update code/config/tests/docs required by the Work Order;
-2. update `docs/DEVLOG.md`;
-3. record exact dependency versions;
-4. provide exact commit SHA/PR;
-5. distinguish local runtime validation from GitHub Actions;
-6. attach or commit sanitized evidence required for acceptance;
-7. list unresolved issues and deviations;
-8. set implementation status to candidate-ready and review status to pending.
-
-Pushing code is not completion by itself.
-
-## 7. Review cycle
-
-The Reviewer must read the Work Order first, then review the exact candidate head. The Reviewer may accept, conditionally accept, reopen or fail the candidate.
-
-If the head changes, only the delta plus any affected prior findings may be reviewed, but acceptance must always name the new exact head.
-
-## 8. Relationship to Issues/PRs
-
-GitHub Issue = active coordination/status surface.
-
-Repository Work Order = durable canonical task contract.
-
-PR = implementation candidate and exact review surface.
-
-PR descriptions must reference the Work Order and Issue when applicable.
-
-## 9. Reviewer execution boundary
-
-Review is repository/evidence based. The Reviewer must not compensate for missing developer evidence by logging into/operating the local PC or VPS unless the Owner explicitly authorizes that specific action.
+```text
+Development Status: DEV_ACCEPTED | BLOCKED
+Independent Review: PENDING | PROJECT_VERIFIED | REOPENED | FAIL
+Phase/WO:
+PR(s):
+Exact Head SHA:
+Components/Versions:
+Acceptance Tests:
+GitHub CI:
+Runtime/E2E Evidence:
+Resource Evidence:
+Minimalism Review:
+Known Issues:
+Architecture Deviations: NONE | ...
+Next Actions:
+```
