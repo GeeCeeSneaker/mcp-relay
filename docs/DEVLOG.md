@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-09-28 — P0-S3/S4/S5: tunnel, gateway and public ingress live
+
+- The Owner cleaned the ingress host (only the Owner's unrelated panel service remains). No reverse proxy remained, so M4 is Caddy.
+- `scripts/vps-install.sh` (idempotent, checksum-pinned uv/Caddy, host-generated secrets) deployed:
+  - the gateway (pinned commit, bundle from `scripts/build-gateway-bundle.sh`);
+  - Caddy with a Let's Encrypt certificate;
+  - the forward-only `mcptunnel` account.
+- AT-TUNNEL passed, including 7 negative checks on the node key. AT-PUBLIC passed via `tests/oauth-e2e.py`: RFC 9207 `iss` is absent, reported as WARN. The full public E2E smoke passed 14/14.
+- The VPS stack uses ~189 MiB RSS.
+- Next: AT-CHATGPT (Owner), then P2 (lifecycle, production DC profile, restart matrix).
+- Evidence: `docs/evidence/P0-S3-S5-tunnel-gateway-public.md`. Runbook: `docs/RUNBOOK.md`.
+- `check-public-hygiene.sh` gained an optional private deny-list via the `HYGIENE_DENYLIST` CI secret.
+
 ## 2026-09-28 — Public-repository hygiene tightened
 
 The repository is public, and the Owner requires that no server information be published.

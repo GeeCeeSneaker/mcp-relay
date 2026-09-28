@@ -1,0 +1,22 @@
+[Unit]
+Description=MCPRelay gateway (OAuth 2.1 AS + MCP aggregation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mcprelay
+Group=mcprelay
+Environment=MCP_GATEWAY_CONFIG=/etc/mcprelay/gateway.yaml
+Environment=MCP_GATEWAY_ENCRYPTION_KEY_FILE=/etc/mcprelay/gateway.key
+ExecStart=/opt/mcprelay/gateway/.venv/bin/mcp-gateway run
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mcprelay
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

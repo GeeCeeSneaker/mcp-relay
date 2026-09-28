@@ -40,6 +40,30 @@ if [ -n "$secrets" ]; then
   fail=1
 fi
 
+# Private deny-list: identifiers that must never appear (domain, hostnames,
+# account names...). Supplied at run time via HYGIENE_DENYLIST (newline- or
+# comma-separated), e.g. from a CI secret, so the list itself is never committed.
+if [ -n "${HYGIENE_DENYLIST:-}" ]; then
+  while IFS= read -r term; do
+    term=$(printf '%s' "$term" | tr -d '[:space:]')
+    [ -z "$term" ] && continue
+    hits=$(files | xargs -0 grep -nIiF -e "$term" 2>/dev/null | cut -d: -f1,2 || true)
+    if [ -n "$hits" ]; then
+      echo "FAIL: private deny-listed identifier found at:"
+      printf '%s\n' "$hits" | sed 's/^/  /'
+      fail=1
+    fi
+  done < <(printf '%s\n' "$HYGIENE_DENYLIST" | tr ',' '\n')
+  # Also check commit messages on this branch.
+  if git rev-parse -q --verify origin/main >/dev/null; then
+    while IFS= read -r term; do
+      term=$(printf '%s' "$term" | tr -d '[:space:]')
+      [ -z "$term" ] && continue
+      git log --format='%B' origin/main..HEAD | grep -qiF -e "$term" && { echo "FAIL: private deny-listed identifier in a commit message"; fail=1; }
+    done < <(printf '%s\n' "$HYGIENE_DENYLIST" | tr ',' '\n')
+  fi
+fi
+
 # Commit author emails on this branch must be GitHub noreply addresses.
 if git rev-parse -q --verify origin/main >/dev/null; then
   bad=$(git log --format='%ae' origin/main..HEAD 2>/dev/null | grep -vE '@users\.noreply\.github\.com$|^noreply@github\.com$' || true)

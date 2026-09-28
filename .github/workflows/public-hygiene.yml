@@ -19,3 +19,6 @@ jobs:
         with:
           fetch-depth: 0
       - run: bash scripts/check-public-hygiene.sh
+        env:
+          # Optional private deny-list (domain, host identifiers); never committed.
+          HYGIENE_DENYLIST: ${{ secrets.HYGIENE_DENYLIST }}
