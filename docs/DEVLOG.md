@@ -1,5 +1,17 @@
 # Development Log
 
+## 2026-09-28 — Full security review and fixes
+
+The Owner requested a full review after P2/P3. Public summary: `docs/security/SECURITY_REVIEW_2026-09.md`. The full host-specific report is kept outside Git. Fixed:
+- OAuth consent phishing: `/authorize` client allow-list at the edge, DCR not exposed, 10-min login session, ChatGPT-only redirect URIs;
+- unused gateway routes hidden; security headers added;
+- systemd sandboxing: gateway exposure score 8.2 → 1.4, Caddy 5.8 → 1.6;
+- host hardening (`scripts/vps-harden.sh`): SUID helpers, sudo restriction, kernel sysctls, Terrapin-safe sshd, LLMNR off;
+- vulnerable `sharp`/`uuid` pinned via overrides (`npm audit` 0);
+- stale test grants revoked (`scripts/vps-revoke.sh`).
+
+Residual risks for the Owner: unsupported ingress-host OS (reinstall recommended), real-identity/prompt-injection exposure, co-hosted root services, the legacy DSR relay still running, and the second VPS with password SSH.
+
 ## 2026-09-28 — P2/P3: tray app, real identity, recovery (ADR-0003)
 
 - The Owner chose real-identity operation and asked for auto-start and recovery via a tray program without console windows.

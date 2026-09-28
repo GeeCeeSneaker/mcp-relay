@@ -14,6 +14,19 @@
 		Referrer-Policy "no-referrer"
 		-Server
 	}
+
+	# Gateway features MCPRelay does not use (DCR, upstream-OAuth backend
+	# management, API docs) are not exposed publicly. Requests from the host
+	# itself (operator tests) are exempt.
+	@unused {
+		not remote_ip 127.0.0.1 ::1
+		path /openapi.json /docs /docs/* /redoc /ui/backends /ui/backends/* /auth/api/backends /auth/api/backends/* /oauth/connect/* /oauth/callback /oauth/client-metadata.json /register
+	}
+	respond @unused 404
+
+	# Only allow-listed OAuth clients (the Owner's own ChatGPT connector) may
+	# start an authorization. Blocks consent phishing via someone else's client.
+<client-allowlist>
 	reverse_proxy 127.0.0.1:18000
 	log {
 		output stderr

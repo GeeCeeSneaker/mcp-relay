@@ -5,7 +5,11 @@
 #   vps-install.sh --domain <mcp-domain> --bundle <mcp-gateway-*.tar.gz> \
 #                  --config-dir <dir with repo config/vps> \
 #                  --node <name>:<vps-port>:<node-pubkey-file>[:<bridge-token-file>] [--node ...] \
-#                  [--gateway-user <name>]
+#                  [--gateway-user <name>] [--allow-client <oauth-client-id> ...]
+#
+# --allow-client pins which OAuth clients may start an authorization through
+# the public edge (e.g. the Owner's ChatGPT connector CIMD URL). Without it the
+# edge accepts any client (first-connection mode) and a warning is printed.
 #
 # Secrets (gateway encryption key, gateway login password) are generated on the
 # host on first run and never printed. The password is stored root-only in
@@ -19,7 +23,7 @@ CADDY_SHA512=8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777cc
 PYTHON_VERSION=3.12
 
 domain='' bundle='' cfg='' gw_user=owner
-nodes=()
+nodes=() clients=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) domain=$2; shift 2 ;;
@@ -27,6 +31,7 @@ while [ $# -gt 0 ]; do
     --config-dir) cfg=$2; shift 2 ;;
     --node) nodes+=("$2"); shift 2 ;;
     --gateway-user) gw_user=$2; shift 2 ;;
+    --allow-client) clients+=("$2"); shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -102,7 +107,28 @@ t = t.replace('<mcp-domain>', domain).replace('<gateway-user>', user).replace('<
 t = t.replace('<backends>\n', backends)
 open(dst, 'w').write(t)
 PY
-sed -e "s/<mcp-domain>/$domain/" -e '/<acme-email>/d' "$cfg/Caddyfile.template" > /etc/mcprelay/Caddyfile
+allowlist=''
+if [ ${#clients[@]} -gt 0 ]; then
+  q=''
+  for c in "${clients[@]}"; do
+    case "$c" in https://*) ;; *) echo "--allow-client must be an https client_id URL" >&2; exit 2 ;; esac
+    q+=" client_id=$c"
+  done
+  allowlist=$'\t@foreign_client {\n\t\tnot remote_ip 127.0.0.1 ::1\n\t\tpath /authorize\n\t\tnot query'"$q"$'\n\t}\n\trespond @foreign_client "OAuth client not allowed" 403\n'
+else
+  log "WARNING: no --allow-client given; any OAuth client may start an authorization"
+fi
+python3 - "$cfg/Caddyfile.template" /etc/mcprelay/Caddyfile "$domain" "$allowlist" <<'PY'
+import sys
+src, dst, domain, allowlist = sys.argv[1:]
+t = open(src).read().replace('<mcp-domain>', domain).replace('<client-allowlist>\n', allowlist)
+t = '\n'.join(l for l in t.split('\n') if '<acme-email>' not in l)
+open(dst, 'w').write(t)
+PY
+/opt/mcprelay/bin/caddy validate --config /etc/mcprelay/Caddyfile --adapter caddyfile >/dev/null
+# Operator tests on this host reach the public name via loopback (exempt above).
+grep -q "mcprelay local ops" /etc/hosts || echo "127.0.0.1 $domain # mcprelay local ops" >> /etc/hosts
+find /var/lib/mcprelay -maxdepth 1 -name 'gateway.db*' -exec chmod 0600 {} +
 chown root:mcprelay /etc/mcprelay/gateway.yaml /etc/mcprelay/gateway.key
 chmod 0640 /etc/mcprelay/gateway.yaml /etc/mcprelay/gateway.key
 chmod 0644 /etc/mcprelay/Caddyfile
