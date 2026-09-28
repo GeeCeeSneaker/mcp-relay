@@ -1,4 +1,4 @@
-# MCPRelay Runbook (P1, manual)
+# MCPRelay Runbook
 
 Placeholders: `<vps-host>`, `<mcp-domain>`, `<node>` (e.g. `win01`), `<port>` (e.g. `18101`). Real values stay outside Git.
 
@@ -8,8 +8,19 @@ Build the gateway bundle on a dev machine, then copy it together with `config/vp
 
 ```bash
 scripts/build-gateway-bundle.sh out/
+bash vps-harden.sh                                     # host hardening (once, then after OS changes)
 bash vps-install.sh --domain <mcp-domain> --bundle mcp-gateway-*.tar.gz \
-  --config-dir config --node <node>:<port>:<node>.pub
+  --config-dir config --node <node>:<port>:<node>.pub:<node>.token \
+  --allow-client <chatgpt-connector-client-id>
+```
+
+On the first ChatGPT connection, omit `--allow-client`: the edge then accepts any client and prints a warning. After connecting, read the connector's CIMD `client_id` from the gateway log ("Issuing access/refresh token pair to client ..."). Re-run with `--allow-client <that id>`. Re-creating the connector in ChatGPT yields a new id; add it the same way.
+
+After on-host tests (`tests/oauth-e2e.py`), remove their clients and tokens:
+
+```bash
+bash vps-revoke.sh --keep-client <chatgpt-connector-client-id>
+bash vps-revoke.sh --all          # emergency: every client must re-authorize
 ```
 
 The script is idempotent. It:

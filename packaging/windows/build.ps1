@@ -13,7 +13,8 @@ $NodeZipSha256 = '158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e5
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not [IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $OutDir }
-if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
+# Empty (not delete) the output dir: a shell or Explorer window may hold it open.
+if (Test-Path $OutDir) { Get-ChildItem -Force $OutDir | Remove-Item -Recurse -Force }
 New-Item -ItemType Directory -Force "$OutDir\runtime\node", "$OutDir\runtime\app" | Out-Null
 
 Write-Host "== compile MCPRelay.exe"

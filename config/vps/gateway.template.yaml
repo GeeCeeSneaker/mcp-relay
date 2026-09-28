@@ -14,14 +14,13 @@ auth:
       password_hash: "<bcrypt-hash>"
   access_token_expiry_seconds: 3600
   refresh_token_expiry_seconds: 2592000
-  login_session_expiry_seconds: 28800
-  # Only these OAuth clients may register redirect URIs via DCR.
+  # Short login session: approving a client needs a fresh password entry.
+  login_session_expiry_seconds: 600
+  # Redirect URIs a client may use: ChatGPT connectors, plus loopback for
+  # on-host operator tests (tests/oauth-e2e.py).
   allowed_client_redirect_uris:
     - "https://chatgpt.com/connector/oauth/*"
     - "https://chatgpt.com/connector_platform_oauth_redirect"
-    - "https://claude.ai/api/mcp/auth_callback"
-    - "https://claude.com/api/mcp/auth_callback"
-    - "http://localhost:*/callback"
     - "http://127.0.0.1:*/callback"
 
 storage:
