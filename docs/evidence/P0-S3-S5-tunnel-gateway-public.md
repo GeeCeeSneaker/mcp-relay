@@ -103,3 +103,17 @@ The tunnel uses the pre-existing `sshd`, so it adds no new process beyond one `s
 
 - P0-S3: pass. P0-S4: pass. P0-S5: pass except AT-CHATGPT, which is `OWNER_VALIDATION_REQUIRED` (needs the Owner's ChatGPT account with Developer mode).
 - Known issues: RFC 9207 `iss` absent (gateway); the host OS is end-of-life (P6 condition, see P0-S0); the node currently runs DC with an isolated test profile (production profile decision in P2).
+
+## AT-CHATGPT — first connection (2026-09-28)
+
+The Owner added the connector in ChatGPT Developer mode.
+
+- **OAuth: pass.** ChatGPT registered via **CIMD** (`client_id` = an `https://chatgpt.com/oauth/.../client.json` URL), completed login/consent, and received a token. The missing RFC 9207 `iss` parameter did **not** block ChatGPT.
+- **Protocol:** ChatGPT (`openai-mcp/1.0.0`) speaks MCP **2026-07-28** (sessionless). `server/discover` and `tools/list` succeeded through the gateway.
+- **Defect found: `resources/read` → 400 (×5).** DC tags five tools with MCP-Apps/ChatGPT widget metadata (`openai/outputTemplate: ui://desktop-commander/...`).
+  - The gateway namespaces resource URIs (`ui://win01/...`) but not these `_meta` references, so ChatGPT's reads fail.
+  - The widget resources are also large (file preview 1.2 MB, config editor 450 KB). One read took 40 s over the cross-border tunnel test path, and the namespaced read through the gateway ended with `SSE stream ended without a response`.
+- **Fix (bridge 0.2.0):** widgets are not needed for MCPRelay's purpose (remote terminal/file tools). The bridge now always strips widget metadata from `tools/list`, so clients never fetch the UI resources.
+  - DC's own switch for this is a remote A/B feature flag, which is not deterministic and depends on a third party, so it was not used.
+  - Verified: the public `tools/list` (2026-07-28) has 0 widget references, `win01_start_process` → `mcp-relay-ok` works through the public edge, and the gateway reconnected to the restarted bridge automatically.
+- Remaining for AT-CHATGPT PASS: refresh the connector in ChatGPT and perform the list/read/command/write checks from ChatGPT itself.
