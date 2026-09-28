@@ -128,6 +128,20 @@ Unnecessary complexity can be a blocking Reviewer finding even if functionality 
 
 Secrets, private keys, auth tokens, cookies and sensitive machine data stay out of Git. Sanitized evidence must be sufficient to verify boundaries/results.
 
+**The repository is public.** In addition to secrets, never commit anything that identifies or profiles the Owner's infrastructure:
+- host addresses (public IPs), hostnames, the MCPRelay domain name, account/user names;
+- key or credential file names/paths;
+- cloud provider/account/region of specific hosts;
+- OS version or patch state of specific hosts, SSH/firewall settings of specific hosts;
+- other workloads running on shared hosts;
+- local machine identifiers (computer name, OS build, user profile paths).
+
+Configuration in Git uses placeholders (`<vps-host>`, `<mcp-domain>`, `<node-name>`). Real values live only in deployment-time files outside Git or in gitignored paths (`config/local/`, `secrets/`, `evidence/local/`).
+
+Evidence records the generic finding, not the identifying detail. For example: "ingress host outside mainland China, sshd forwards bind loopback", not the provider, region or IP.
+
+CI enforces a minimum automatically (`scripts/check-public-hygiene.sh`): no public IPv4 literals, private keys or common token formats in tracked files. The check is a backstop, not a substitute for review.
+
 ## 10. Final Definition of Done
 
 v1 is complete only when `P6` acceptance passes on an exact release head, actual ChatGPT proof exists, docs/reproducibility/resource/minimalism checks are complete and independent Reviewer records `PROJECT_VERIFIED` or explicit `PASS_WITH_CONDITIONS`.

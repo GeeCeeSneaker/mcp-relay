@@ -1,0 +1,21 @@
+name: public-hygiene
+
+# The repository is public: block public IPs, private keys, common tokens and
+# non-noreply author emails (DEVELOPMENT_MANAGEMENT.md §9).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: bash scripts/check-public-hygiene.sh
