@@ -1,0 +1,14 @@
+# MCPRelay public TLS ingress (M4). Rendered into /etc/mcprelay/Caddyfile.
+{
+	admin off
+	email <acme-email>
+}
+
+<mcp-domain> {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:18000
+	log {
+		output stderr
+		format console
+	}
+}

@@ -22,6 +22,8 @@ From OpenAI's MCP connector auth documentation:
 - Redirect URIs: `https://chatgpt.com/connector/oauth/{callback_id}` or `https://chatgpt.com/connector_platform_oauth_redirect`.
 - Custom connectors require ChatGPT **Developer mode** (Settings → Security and login), which depends on the Owner's account plan.
 
+**Update 2026-09-28 (P0-S4/S5):** the gateway passed AT-PUBLIC. The RFC 9207 `iss` response parameter is confirmed absent and is tracked until AT-CHATGPT.
+
 Consequence: M3 must be a real OAuth AS. Writing our own is escalation (custom auth). So a gateway with a built-in, spec-compliant AS is the minimum.
 
 ### F2 — `R0Wi/mcp-gateway` fits M3 functionally and also solves M9 (multi-node)
@@ -67,6 +69,8 @@ P0-S1 must confirm this empirically. If Supergateway fails, the same-role replac
   - per-node isolation comes from a dedicated forward-only account and per-key `restrict,port-forwarding,permitlisten="127.0.0.1:<node port>"` in `authorized_keys`;
   - `ExitOnForwardFailure=yes` + `ServerAliveInterval` give fail-visible behavior;
   - the cost is that reconnect needs an external restart loop (P1: a small script; P3: the node lifecycle manager, which is needed anyway).
+
+**Update 2026-09-28 (P0-S3): OpenSSH reverse forward accepted.** AT-TUNNEL passed, including negative checks. rathole/frp were not needed.
 
 Candidate order for P0-S3 becomes: **(1) OpenSSH reverse forward, (2) rathole v0.5.0, (3) frp**. Choose the first one that passes AT-TUNNEL, including wrong-credential and recovery ≤ 60 s. This is a same-responsibility substitution that shrinks the architecture.
 

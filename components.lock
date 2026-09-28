@@ -7,9 +7,10 @@ M1-adapter           node-runtime/bridge.mjs (project-owned)   0.1.0      repo; 
 M1-adapter-sdk       @modelcontextprotocol/sdk                 1.30.1     npm; node-runtime/
 node-runtime         Node.js                                   24.x       tested v24.15.0 (Windows); packaging pins exact build in P3
 test-client          @modelcontextprotocol/sdk                 1.30.1     npm; tests/
-M2-tunnel            (pending P0-S3: OpenSSH reverse forward first)
-M3-gateway           (pending P0-S4: R0Wi/mcp-gateway, pin commit/digest)
-M4-ingress           (pending P0-S0/S5: existing VPS proxy or Caddy)
+M2-tunnel            OpenSSH reverse forward (node ssh.exe -> host sshd)  host      forward-only account; scripts/node-tunnel.ps1 (P0-S3 accepted)
+M3-gateway           R0Wi/mcp-gateway (MIT per pyproject)       59c1efd00e0c1baea4ed7861429200d2d6be0e83  bundle via scripts/build-gateway-bundle.sh (P0-S4 accepted)
+M3-runtime           Python (uv-managed)                        3.12       uv 0.12.19 sha256 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8
+M4-ingress           Caddy                                      2.11.4     sha512 8220d1f0...ebf1c9 (full hash in scripts/vps-install.sh) (P0-S5 accepted)
 #
 # rejected
 M1-adapter           supergateway                              4.0.0      per-request/per-session DC, binds all interfaces (P0-S1)
