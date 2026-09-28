@@ -6,11 +6,11 @@
 //     [--prefix win01_]        tool-name prefix added by a namespacing gateway
 //     [--token-env MCP_TOKEN]  env var holding a bearer access token
 //     [--os windows|linux]     node OS (selects the long-running test command)
+//     [--era legacy|modern]    protocol generation: 2025-era handshake (SDK v1
+//                              client) or sessionless 2026-07-28 (SDK v2 client)
 //
 // Exit code 0 only if every check passes.
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { parseArgs } from 'node:util';
 
 const { values: opt } = parseArgs({
@@ -20,8 +20,16 @@ const { values: opt } = parseArgs({
     prefix: { type: 'string', default: '' },
     'token-env': { type: 'string' },
     os: { type: 'string', default: process.platform === 'win32' ? 'windows' : 'linux' },
+    era: { type: 'string', default: 'legacy' },
   },
 });
+const MODERN = '2026-07-28';
+const sdk = opt.era === 'modern'
+  ? await import('@modelcontextprotocol/client')
+  : {
+      ...(await import('@modelcontextprotocol/sdk/client/index.js')),
+      ...(await import('@modelcontextprotocol/sdk/client/streamableHttp.js')),
+    };
 if (!opt.url || !opt.fixture) {
   console.error('usage: mcp-smoke.mjs --url <mcp url> --fixture <node-side dir> [--prefix p_] [--token-env VAR] [--os windows|linux]');
   process.exit(2);
@@ -54,8 +62,10 @@ async function connect() {
     if (!token) throw new Error(`env var ${opt['token-env']} is empty`);
     headers.Authorization = `Bearer ${token}`;
   }
-  const transport = new StreamableHTTPClientTransport(new URL(opt.url), { requestInit: { headers } });
-  const client = new Client({ name: 'mcprelay-smoke', version: '0.1.0' });
+  const transport = new sdk.StreamableHTTPClientTransport(new URL(opt.url), { requestInit: { headers } });
+  const client = opt.era === 'modern'
+    ? new sdk.Client({ name: 'mcprelay-smoke', version: '0.1.0' }, { versionNegotiation: { mode: { pin: MODERN } } })
+    : new sdk.Client({ name: 'mcprelay-smoke', version: '0.1.0' });
   await client.connect(transport);
   return client;
 }
@@ -115,7 +125,9 @@ let pid;
 const initOk = await check('initialize', async () => {
   a = await connect();
   const v = a.getServerVersion();
-  return `server ${v?.name}@${v?.version}`;
+  const pv = typeof a.getNegotiatedProtocolVersion === 'function' ? a.getNegotiatedProtocolVersion() : undefined;
+  if (opt.era === 'modern') expect(pv === MODERN, `negotiated ${pv}, expected ${MODERN}`);
+  return `server ${v?.name}@${v?.version}${pv ? `, protocol ${pv}` : ''}`;
 });
 if (!initOk) process.exit(1);
 

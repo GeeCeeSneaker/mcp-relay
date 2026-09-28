@@ -5,7 +5,9 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@modelcontextprotocol/node": "2.1.0",
     "@modelcontextprotocol/sdk": "1.30.1",
+    "@modelcontextprotocol/server": "2.2.0",
     "@wonderwhy-er/desktop-commander": "0.2.51"
   },
   "overrides": {

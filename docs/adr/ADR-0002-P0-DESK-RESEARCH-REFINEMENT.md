@@ -52,6 +52,8 @@ Expected consequences: a process started in call N is invisible in call N+1, the
 
 Required M1 behavior is therefore made explicit: **exactly one long-lived DC process per node, shared by all requests and sessions and surviving gateway/tunnel reconnects, served on loopback only.**
 
+**Update 2026-09-28 (bridge 0.4.0):** the bridge also serves the 2026-07-28 sessionless protocol through the official SDK v2 (`createMcpHandler`), which halved per-call latency via the gateway. The line count is ~390, above the < 300 target, because it now carries two protocol legs. It is still one process with no new runtime; see `docs/evidence/P2-performance-2026-09-28.md`.
+
 **Update 2026-09-27 (P0-S1): confirmed.** Supergateway was rejected and `node-runtime/bridge.mjs` was adopted. See `docs/evidence/P0-S1-local-adapter.md`.
 
 P0-S1 must confirm this empirically. If Supergateway fails, the same-role replacement is a **minimal project-owned stdio↔Streamable-HTTP bridge** built only on the official `@modelcontextprotocol/sdk`: one DC child, loopback bind, forward JSON-RPC requests/notifications, restart DC if it exits. This is transport adaptation between two standard MCP transports, not a custom protocol, and it removes a third-party process instead of adding one. It is autonomous (Level A) under the M1 substitution rule, provided that:

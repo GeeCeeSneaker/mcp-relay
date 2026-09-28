@@ -3,11 +3,12 @@
 #
 # role               component                                 version    source / status
 M1-capability        @wonderwhy-er/desktop-commander           0.2.51     npm; node-runtime/; overrides sharp 0.35.5, uuid 11.1.1 (security review)
-M1-adapter           node-runtime/bridge.mjs (project-owned)   0.3.1      repo; bearer auth, strips UI widget meta (ADR-0002 F3)
-M1-adapter-sdk       @modelcontextprotocol/sdk                 1.30.1     npm; node-runtime/
+M1-adapter           node-runtime/bridge.mjs (project-owned)   0.4.0      repo; bearer auth, strips UI widget meta, serves 2025 + 2026-07-28 eras (ADR-0002 F3)
+M1-adapter-sdk       @modelcontextprotocol/sdk                 1.30.1     npm; node-runtime/ (2025-era leg + DC stdio client)
+M1-adapter-sdk-v2    @modelcontextprotocol/server + /node      2.2.0/2.1.0 npm; node-runtime/ (2026-07-28 leg)
 node-runtime         Node.js (bundled in Windows package)      v24.21.0   sha256 158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541 (win-x64 zip)
 M6-node-app          app/windows/MCPRelay.cs (project-owned)   0.1.0      tray app + supervisor; built with Windows .NET Framework 4.x csc (ADR-0003)
-test-client          @modelcontextprotocol/sdk                 1.30.1     npm; tests/
+test-client          @modelcontextprotocol/sdk 1.30.1 + @modelcontextprotocol/client 2.2.0   npm; tests/ (both eras)
 M2-tunnel            OpenSSH reverse forward (node ssh.exe -> host sshd)  host      forward-only account; scripts/node-tunnel.ps1 (P0-S3 accepted)
 M3-gateway           R0Wi/mcp-gateway (MIT per pyproject)       59c1efd00e0c1baea4ed7861429200d2d6be0e83  bundle via scripts/build-gateway-bundle.sh (P0-S4 accepted)
 M3-runtime           Python (uv-managed)                        3.12       uv 0.12.19 sha256 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8

@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-09-28 — Performance: bridge 0.3.1 / 0.4.0
+
+- The measurement (`tests/perf-probe.py`) found tunnel RTT 38 ms and 100% success, with per-call latency dominated by the gateway opening fresh backend sessions over the tunnel (2 sessions / 12 HTTP exchanges per public call).
+- 0.3.1: JSON responses instead of one-event SSE, which fixes >1 MiB results (the gateway's httpx2 caps SSE events at 1 MiB).
+- 0.4.0 (Owner chose option B): the bridge serves the sessionless 2026-07-28 protocol via the official SDK v2, alongside the 2025 path, so the gateway negotiates it with the node. Public per-call p50 went 1.5 s → 0.7 s (sustained 0.59 s). Both eras pass locally, publicly and in CI.
+- The bridge is now ~390 lines (above ADR-0002's < 300 target) because of the second protocol leg; the remaining latency is gateway-internal (option A).
+
 ## 2026-09-28 — Full security review and fixes
 
 The Owner requested a full review after P2/P3. Public summary: `docs/security/SECURITY_REVIEW_2026-09.md`. The full host-specific report is kept outside Git. Fixed:
