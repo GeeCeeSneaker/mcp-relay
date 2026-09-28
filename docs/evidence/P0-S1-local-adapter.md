@@ -78,3 +78,9 @@ node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture <dir inside 
 ```
 
 CI runs the same AT-LOCAL checks on `windows-latest` and `ubuntu-latest` (`.github/workflows/local-adapter.yml`).
+
+## CI result (2026-09-28)
+
+GitHub Actions run `36368610908` on `main@dd43d2a`: **success**.
+- `windows-latest`: all 14 AT-LOCAL checks pass; the listener is loopback-only.
+- `ubuntu-latest`: all 14 checks pass, including cross-connection process state. This is the first Linux evidence for the same runtime (early P5 probe). Linux file operations are much faster than on the Owner's Windows node: `read_file` ~19 ms vs ~300 ms.
