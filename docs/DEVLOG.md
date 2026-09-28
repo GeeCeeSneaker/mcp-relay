@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-28 — P2/P3: tray app, real identity, recovery (ADR-0003)
+
+- The Owner chose real-identity operation and asked for auto-start and recovery via a tray program without console windows.
+- `MCPRelay.exe` (native WinForms, built with Windows' own csc) supervises the bridge and tunnel in Job Objects as the logged-in user. It restarts on exit, resume or network change, and hides to the tray on close.
+- `packaging/windows` builds a self-contained package (pinned Node) and installs it per user. `scripts/node-tunnel.ps1` was removed.
+- Security: the bridge now requires a bearer token (the gateway's backend credential), scrubbed from DC's environment. Caddy sends HSTS, frame-deny/CSP frame-ancestors, nosniff and no-referrer headers.
+- Recovery T1–T6: 0.3–6.6 s. Network outage, reboot and sleep tests are pending with the Owner.
+- Evidence: `docs/evidence/P2-P3-node-app-recovery.md`.
+
 ## 2026-09-28 — WO-0001 DEV_ACCEPTED: ChatGPT operates the Windows node
 
 - The first ChatGPT connection authenticated via CIMD (the missing `iss` did not block it) and uses MCP 2026-07-28.

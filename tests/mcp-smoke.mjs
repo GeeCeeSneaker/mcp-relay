@@ -98,6 +98,17 @@ async function readTicks(client, pid) {
   throw new Error(`no new output after 5 reads: ${brief(last)}`);
 }
 
+if (opt['token-env']) {
+  await check('request without bearer token is rejected', async () => {
+    const r = await fetch(opt.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'x', version: '0' } } }),
+    });
+    expect(r.status === 401, `status ${r.status}`);
+  });
+}
+
 // --- session A -------------------------------------------------------------
 let a;
 let pid;
@@ -152,6 +163,12 @@ await check('edit fixture file', async () => {
 await check('deterministic command returns mcp-relay-ok', async () => {
   const r = await call(a, 'start_process', { command: 'echo mcp-relay-ok', timeout_ms: 15000 });
   expect(!r.isError && r.text.includes('mcp-relay-ok'), brief(r.text));
+});
+
+await check('commands cannot read the bridge token from their environment', async () => {
+  const command = opt.os === 'windows' ? 'echo "[$env:MCPRELAY_BRIDGE_TOKEN]"' : 'echo "[$MCPRELAY_BRIDGE_TOKEN]"';
+  const r = await call(a, 'start_process', { command, timeout_ms: 15000, ...(opt.os === 'windows' ? { shell: 'powershell.exe' } : {}) });
+  expect(!r.isError && r.text.includes('[]'), brief(r.text));
 });
 
 await check('start long-running process', async () => {
