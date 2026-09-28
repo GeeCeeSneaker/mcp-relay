@@ -1,6 +1,6 @@
 # WO-0001 — P0/P1 Windows Single-Node End-to-End
 
-- Status: `IN_PROGRESS`
+- Status: `DEV_ACCEPTED` (2026-09-28); independent review: `PENDING`
 - Priority: `P0`
 - Program authority: pre-authorized under `MASTER_IMPLEMENTATION_PLAN.md`
 - Refined by: ADR-0002 (2026-09-27)
@@ -45,3 +45,28 @@ Pass `AT-LOCAL`, `AT-TUNNEL`, `AT-PUBLIC` and generic E2E. Record `AT-CHATGPT` a
 
 ## Handoff
 Use the template in `WORK_ORDER_PROTOCOL.md`. `DEV_ACCEPTED` allows the team to continue directly into WO-0002. Independent review may happen asynchronously.
+
+## Completion handoff (2026-09-28)
+
+```text
+Development Status: DEV_ACCEPTED
+Independent Review: PENDING
+Phase/WO: P0 + P1 / WO-0001
+PR(s): #1-#9 (plan, P0-S1 bridge, CI, hygiene, P0-S3..S5 stack, widget fix)
+Components/Versions: components.lock (DC 0.2.51, bridge 0.2.0, OpenSSH reverse forward,
+  R0Wi/mcp-gateway 59c1efd, uv 0.12.19 / Python 3.12, Caddy 2.11.4)
+Acceptance Tests: AT-LOCAL pass (CI Windows+Linux); AT-TUNNEL pass (+7 negative);
+  AT-PUBLIC pass (RFC 9207 iss absent = WARN); generic E2E pass; AT-CHATGPT PASS (Owner)
+GitHub CI: at-local (windows, ubuntu) + public-hygiene green on main
+Runtime/E2E Evidence: docs/evidence/P0-S1-local-adapter.md, P0-S3-S5-tunnel-gateway-public.md
+Resource Evidence: node ~196 MiB WS (bridge+DC, excl. ssh.exe); VPS ~189 MiB RSS
+Minimalism Review: Supergateway removed (replaced by 250-line SDK bridge); no new VPS
+  process for the tunnel (existing sshd); no Docker, DB beyond gateway's intrinsic SQLite
+Known Issues: gateway lacks RFC 9207 iss; gateway does not rewrite _meta ui:// refs
+  (mitigated in bridge); ingress host OS end-of-life (P6 condition); node runs manually
+  with an isolated DC test profile; DC crash orphans its child processes
+Architecture Deviations: M1 adapter = project bridge (ADR-0002 F3); M2 = OpenSSH (F4);
+  M4 = Caddy (F5 fallback)
+Next Actions: WO-0002 (P2) - node lifecycle/auto-start as interactive user, production
+  DC profile decision, restart/recovery matrix, diagnostics
+```

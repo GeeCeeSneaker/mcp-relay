@@ -117,3 +117,19 @@ The Owner added the connector in ChatGPT Developer mode.
   - DC's own switch for this is a remote A/B feature flag, which is not deterministic and depends on a third party, so it was not used.
   - Verified: the public `tools/list` (2026-07-28) has 0 widget references, `win01_start_process` → `mcp-relay-ok` works through the public edge, and the gateway reconnected to the restarted bridge automatically.
 - Remaining for AT-CHATGPT PASS: refresh the connector in ChatGPT and perform the list/read/command/write checks from ChatGPT itself.
+
+## AT-CHATGPT — PASS (Owner-validated, 2026-09-28)
+
+After bridge 0.2.0, the Owner ran the checks from ChatGPT itself. Both gateway logs and DC's own tool history record the calls, and all results were ok:
+
+| ChatGPT action | Tool | Result |
+|---|---|---|
+| harmless deterministic command | `win01_start_process` (`echo mcp-relay-ok`, current path) | ok |
+| list directory | `win01_list_directory` + `win01_start_process` (`Get-ChildItem`) | ok |
+| controlled write | `win01_write_file` | ok |
+| read back | `win01_read_file` | ok |
+| gateway health | `gateway_status` | ok |
+
+Tool-call latency seen at the ingress: 0.01–3.9 s (avg 2.1 s, including command execution).
+
+Residual: ChatGPT kept the tool definitions it cached before bridge 0.2.0. Its "refresh" did not re-issue `tools/list`, so it still attempted 2 widget `resources/read` calls (400). This is harmless because results fall back to text. Removing and re-adding the connector clears it.

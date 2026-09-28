@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-09-28 — WO-0001 DEV_ACCEPTED: ChatGPT operates the Windows node
+
+- The first ChatGPT connection authenticated via CIMD (the missing `iss` did not block it) and uses MCP 2026-07-28.
+- Widget `resources/read` calls failed (gateway namespacing plus ~1.2 MB UI resources). Fixed by bridge 0.2.0, which strips widget metadata. The Owner confirmed widgets are unnecessary.
+- The Owner validated AT-CHATGPT: command, directory listing, write and read all succeeded from ChatGPT, confirmed in gateway logs and DC tool history.
+- WO-0001 is `DEV_ACCEPTED`; the handoff is recorded in the WO. Next: WO-0002 (P2).
+
 ## 2026-09-28 — P0-S3/S4/S5: tunnel, gateway and public ingress live
 
 - The Owner cleaned the ingress host (only the Owner's unrelated panel service remains). No reverse proxy remained, so M4 is Caddy.
