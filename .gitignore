@@ -31,3 +31,6 @@ evidence/local/
 Thumbs.db
 .vscode/
 .idea/
+
+# PowerShell caches created when DC runs with an overridden profile
+Microsoft/
