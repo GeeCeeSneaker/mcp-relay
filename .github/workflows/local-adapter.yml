@@ -1,0 +1,64 @@
+name: local-adapter
+
+# AT-LOCAL on real Windows and Linux runners: pinned node runtime
+# (Desktop Commander + bridge) exercised by the project smoke client.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  at-local:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned runtime and test client
+        run: |
+          npm ci --prefix node-runtime --no-fund --no-audit
+          npm ci --prefix tests --no-fund --no-audit
+      - name: Disable Desktop Commander telemetry
+        run: |
+          mkdir -p "$HOME/.claude-server-commander"
+          echo '{"telemetryEnabled": false}' > "$HOME/.claude-server-commander/config.json"
+      - name: Start bridge
+        run: |
+          node node-runtime/bridge.mjs --port 18001 > bridge.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18001/healthz && exit 0
+            sleep 1
+          done
+          cat bridge.log; exit 1
+      - name: Smoke test (AT-LOCAL)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FIXTURE="$(cygpath -w "$HOME")\mcprelay-fixture"; OSNAME=windows
+          else
+            FIXTURE="$HOME/mcprelay-fixture"; OSNAME=linux
+          fi
+          node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME"
+      - name: Listener must be loopback-only
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            netstat -ano | grep ':18001 .*LISTENING'
+            ! netstat -ano | grep ':18001 .*LISTENING' | grep -v '127.0.0.1:18001'
+          else
+            ss -ltn | grep ':18001'
+            ! ss -ltn | grep ':18001' | grep -v '127.0.0.1:18001'
+          fi
+      - name: Bridge log
+        if: always()
+        run: cat bridge.log || true

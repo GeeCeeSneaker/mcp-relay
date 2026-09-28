@@ -1,0 +1,11 @@
+{
+  "name": "mcprelay-node-runtime",
+  "private": true,
+  "description": "Pinned node-side runtime for MCPRelay (Desktop Commander + local adapter).",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "@wonderwhy-er/desktop-commander": "0.2.51"
+  }
+}

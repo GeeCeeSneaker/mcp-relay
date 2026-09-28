@@ -1,0 +1,15 @@
+# MCPRelay component inventory (exact versions in use).
+# npm lockfiles (node-runtime/package-lock.json, tests/package-lock.json) pin the full trees.
+#
+# role               component                                 version    source / status
+M1-capability        @wonderwhy-er/desktop-commander           0.2.51     npm; node-runtime/  (P0-S1 accepted)
+M1-adapter           node-runtime/bridge.mjs (project-owned)   0.1.0      repo; replaces Supergateway (ADR-0002 F3, P0-S1)
+M1-adapter-sdk       @modelcontextprotocol/sdk                 1.30.1     npm; node-runtime/
+node-runtime         Node.js                                   24.x       tested v24.15.0 (Windows); packaging pins exact build in P3
+test-client          @modelcontextprotocol/sdk                 1.30.1     npm; tests/
+M2-tunnel            (pending P0-S3: OpenSSH reverse forward first)
+M3-gateway           (pending P0-S4: R0Wi/mcp-gateway, pin commit/digest)
+M4-ingress           (pending P0-S0/S5: existing VPS proxy or Caddy)
+#
+# rejected
+M1-adapter           supergateway                              4.0.0      per-request/per-session DC, binds all interfaces (P0-S1)

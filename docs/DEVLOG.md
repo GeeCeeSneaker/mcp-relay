@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-09-27 — P0-S1/S2: local adapter decided (bridge replaces Supergateway)
+
+- Added `tests/mcp-smoke.mjs`, a shared AT-LOCAL/TUNNEL/PUBLIC smoke client (official SDK).
+- Tested Supergateway 4.0.0 on the Owner's Windows node:
+  - stateless mode spawned a DC per call (~2.4 s each) and lost process state even within a session;
+  - stateful mode lost state across connections;
+  - both bound all interfaces and orphaned DC-started processes.
+  ADR-0002 F3 is confirmed.
+- Implemented `node-runtime/bridge.mjs`: one long-lived DC, loopback-only, JSON-RPC id remapping across sessions, DC auto-restart, `/healthz`. All AT-LOCAL checks pass, as do DC kill recovery (~3 s) and 3 concurrent clients. Idle node stack is ~196 MiB WS.
+- Added `components.lock` and a CI workflow running AT-LOCAL on Windows and Linux. The Linux run doubles as an early P5 compatibility probe.
+- Evidence: `docs/evidence/P0-S1-local-adapter.md`.
+- Next: P0-S0/S3/S4 need Owner inputs (VPS access, DNS name).
+
 ## 2026-09-27 — P0 desk research and plan refinement (ADR-0002)
 
 The development team checked every ADR-0001 candidate and ChatGPT's current remote-MCP requirements before writing config. Recorded in ADR-0002:
