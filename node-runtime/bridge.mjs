@@ -35,7 +35,7 @@ const { values: opt } = parseArgs({
 
 const require = createRequire(import.meta.url);
 const DC_ENTRY = require.resolve('@wonderwhy-er/desktop-commander/package.json').replace(/package\.json$/, 'dist/index.js');
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 
 const TOKEN = process.env.MCPRELAY_BRIDGE_TOKEN || '';
 delete process.env.MCPRELAY_BRIDGE_TOKEN;
@@ -218,6 +218,10 @@ function newSession() {
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (id) => sessions.set(id, session),
+    // Answer POSTs with plain JSON instead of a one-event SSE stream: SSE
+    // clients cap single events (e.g. 1 MiB in the gateway's httpx2), which
+    // large read_file results exceed. Notifications still use the GET stream.
+    enableJsonResponse: true,
   });
   transport.onmessage = (msg) => fromClient(session, msg).catch((e) => log('client message failed:', e.message));
   transport.onclose = () => dropSession(transport.sessionId);

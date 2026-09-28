@@ -3,7 +3,7 @@
 #
 # role               component                                 version    source / status
 M1-capability        @wonderwhy-er/desktop-commander           0.2.51     npm; node-runtime/; overrides sharp 0.35.5, uuid 11.1.1 (security review)
-M1-adapter           node-runtime/bridge.mjs (project-owned)   0.3.0      repo; bearer auth, strips UI widget meta (ADR-0002 F3)
+M1-adapter           node-runtime/bridge.mjs (project-owned)   0.3.1      repo; bearer auth, strips UI widget meta (ADR-0002 F3)
 M1-adapter-sdk       @modelcontextprotocol/sdk                 1.30.1     npm; node-runtime/
 node-runtime         Node.js (bundled in Windows package)      v24.21.0   sha256 158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541 (win-x64 zip)
 M6-node-app          app/windows/MCPRelay.cs (project-owned)   0.1.0      tray app + supervisor; built with Windows .NET Framework 4.x csc (ADR-0003)
