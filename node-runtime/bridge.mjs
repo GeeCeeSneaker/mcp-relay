@@ -24,6 +24,8 @@ import { parseArgs } from 'node:util';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
+import { Server as ModernServer, ProtocolError, createMcpHandler, isLegacyRequest } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
 
 const { values: opt } = parseArgs({
   options: {
@@ -35,7 +37,7 @@ const { values: opt } = parseArgs({
 
 const require = createRequire(import.meta.url);
 const DC_ENTRY = require.resolve('@wonderwhy-er/desktop-commander/package.json').replace(/package\.json$/, 'dist/index.js');
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 
 const TOKEN = process.env.MCPRELAY_BRIDGE_TOKEN || '';
 delete process.env.MCPRELAY_BRIDGE_TOKEN;
@@ -109,7 +111,8 @@ function startDc() {
     log(`DC exited (pid ${dcPid})`);
     rejectInit(new Error('Desktop Commander exited'));
     for (const [bid, p] of pending) {
-      p.session.transport.send(rpcError(p.id, -32603, 'Desktop Commander restarted; request aborted')).catch(() => {});
+      if (p.reject) p.reject(Object.assign(new Error('Desktop Commander restarted; request aborted'), { code: -32603 }));
+      else p.session.transport.send(rpcError(p.id, -32603, 'Desktop Commander restarted; request aborted')).catch(() => {});
       pending.delete(bid);
     }
     dc = null;
@@ -140,6 +143,11 @@ function fromDc(msg) {
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
+    if (p.resolve) { // request issued by the modern (2026-07-28) leg
+      if (msg.error) p.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code, data: msg.error.data }));
+      else p.resolve(msg.result);
+      return;
+    }
     const out = p.method === 'tools/list' && msg.result ? { ...msg, result: stripUiMeta(msg.result) } : msg;
     p.session.transport.send({ ...out, id: p.id }).catch((e) => log('send to client failed:', e.message));
     return;
@@ -155,6 +163,81 @@ function fromDc(msg) {
     ? [progressOwner.get(token)]
     : [...sessions.values()];
   for (const s of targets) s.transport.send(msg).catch(() => {});
+}
+
+// ------------------------------------------------- modern (2026-07-28) leg --
+// Sessionless clients (the gateway, ChatGPT-era SDKs) get the 2026-07-28
+// protocol: no initialize/initialized/GET/DELETE round trips per connection.
+// Each request is served by a throwaway SDK v2 Server whose handlers forward to
+// the same long-lived DC over its existing (2025-era) stdio session.
+function dcRequest(method, params) {
+  return dcReady.then(() => new Promise((resolve, reject) => {
+    const bid = nextId++;
+    pending.set(bid, { resolve, reject, method });
+    dc.send({ jsonrpc: '2.0', id: bid, method, ...(params === undefined ? {} : { params }) })
+      .catch((e) => { pending.delete(bid); reject(e); });
+  }));
+}
+
+// Strip the per-request envelope keys the 2025-era DC does not understand.
+function legacyParams(params) {
+  if (!params?._meta) return params;
+  const meta = Object.fromEntries(Object.entries(params._meta).filter(([k]) => !k.startsWith('io.modelcontextprotocol/')));
+  const { _meta, ...rest } = params;
+  return Object.keys(meta).length ? { ...rest, _meta: meta } : rest;
+}
+
+const FORWARDED = {
+  tools: ['tools/list', 'tools/call'],
+  resources: ['resources/list', 'resources/read', 'resources/templates/list'],
+  prompts: ['prompts/list', 'prompts/get'],
+  completions: ['completion/complete'],
+};
+
+async function modernServer() {
+  const init = await dcReady;
+  const capabilities = {};
+  for (const cap of Object.keys(FORWARDED)) if (init.capabilities?.[cap]) capabilities[cap] = {};
+  const server = new ModernServer(init.serverInfo, { capabilities, instructions: init.instructions });
+  for (const cap of Object.keys(capabilities)) {
+    for (const method of FORWARDED[cap]) {
+      server.setRequestHandler(method, async (request) => {
+        try {
+          const result = await dcRequest(method, legacyParams(request.params));
+          return method === 'tools/list' ? stripUiMeta(result) : result;
+        } catch (e) {
+          if (typeof e.code === 'number') throw new ProtocolError(e.code, e.message, e.data);
+          throw e;
+        }
+      });
+    }
+  }
+  return server;
+}
+const modernHandler = toNodeHandler(createMcpHandler(modernServer, { legacy: 'reject' }));
+
+const MAX_BODY = 4 * 1024 * 1024;
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { reject(Object.assign(new Error('Request body too large'), { status: 413 })); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reject(Object.assign(new Error('Parse error: invalid JSON'), { status: 400 })); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function probeRequest(req) {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
+  return new Request(`http://localhost${req.url}`, { method: req.method, headers });
 }
 
 // ---------------------------------------------------------- HTTP sessions --
@@ -247,6 +330,20 @@ const http = createServer(async (req, res) => {
     res.end(JSON.stringify(rpcError(null, -32001, 'Unauthorized')));
     return;
   }
+  let parsedBody;
+  if (req.method === 'POST') {
+    try {
+      parsedBody = await readJsonBody(req);
+    } catch (e) {
+      res.writeHead(e.status || 400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(rpcError(null, -32700, e.message)));
+      return;
+    }
+  }
+  if (!(await isLegacyRequest(probeRequest(req), parsedBody, { maxRequestBodySize: MAX_BODY }))) {
+    await modernHandler(req, res, parsedBody);
+    return;
+  }
   const sid = req.headers['mcp-session-id'];
   let session = sid ? sessions.get(sid) : undefined;
   if (sid && !session) {
@@ -257,7 +354,7 @@ const http = createServer(async (req, res) => {
   }
   if (!session) session = newSession();
   session.lastSeen = Date.now();
-  await session.transport.handleRequest(req, res);
+  await session.transport.handleRequest(req, res, parsedBody);
 });
 
 setInterval(() => {

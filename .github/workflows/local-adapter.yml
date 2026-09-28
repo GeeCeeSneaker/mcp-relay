@@ -54,7 +54,10 @@ jobs:
           else
             FIXTURE="$HOME/mcprelay-fixture"; OSNAME=linux
           fi
-          node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN
+          for era in legacy modern; do
+            echo "== protocol era: $era"
+            node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
+          done
       - name: Listener must be loopback-only
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then

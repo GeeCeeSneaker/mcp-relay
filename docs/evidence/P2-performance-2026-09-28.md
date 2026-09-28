@@ -34,4 +34,23 @@ Stability:
      - persistent backend session in the gateway: expected ~0.1–0.3 s/call; needs a gateway patch;
      - 2026-07-28 support in the bridge, which removes the handshake/teardown steps: expected ~0.5 s/call;
      - both.
+## Optimization B: 2026-07-28 support in the bridge (bridge 0.4.0)
+
+The bridge now also serves the sessionless 2026-07-28 protocol (MCP TypeScript SDK v2: `createMcpHandler` + `isLegacyRequest` routing). Each modern request is answered by a throwaway SDK v2 `Server` whose handlers forward to the same long-lived Desktop Commander over its existing stdio session. 2025-era clients keep the previous path. The gateway now negotiates 2026-07-28 with the node, which removes the per-session `initialize` / `initialized` / GET / DELETE round trips.
+
+| Measurement (via public edge) | 0.3.1 | 0.4.0 |
+|---|---|---|
+| `list_directory` (n=30) | p50 1515 ms / p95 1542 ms | **p50 700 ms / p95 745 ms** |
+| `start_process echo` (n=15) | p50 1572 ms | **p50 769 ms** |
+| `read_file` 64 KiB / 256 KiB / 1 MiB | 1691 / 1657 / 1793 ms | **775 / 849 / 968 ms** |
+| Sustained, 1 call / 3 s | 20/20 ok, p50 1368 ms | **40/40 ok over 120 s, p50 594 ms** |
+| Tunnel RTT / direct bridge call | 38 / 55 ms | 39 / 63 ms (unchanged) |
+
+Public smoke results:
+- The SDK v2 (2026-07-28) client passed 17/17 and the 2025-era client passed 17/17 (2 runs).
+- One earlier legacy run hit a single client-side `fetch failed` on the test workstation's proxied connection, which did not reproduce.
+- CI now runs AT-LOCAL in both protocol generations.
+
+The remaining ~0.6 s per call is gateway-internal: it still opens fresh backend exchanges per request. Option A (persistent backend session) would address that.
+
 3. **Desktop Commander start time varies (2–30 s)** under the real profile. It waits for its remote feature-flag fetch; startup only.
