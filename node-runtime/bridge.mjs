@@ -11,9 +11,14 @@
 // result, and remaps JSON-RPC ids so concurrent sessions cannot collide.
 //
 //   node bridge.mjs [--port 18001] [--host 127.0.0.1] [--path /mcp]
+//
+// Auth: if MCPRELAY_BRIDGE_TOKEN is set, every /mcp request must carry
+// `Authorization: Bearer <token>` (the gateway's backend credential). The
+// variable is removed from the environment before DC starts, so commands run
+// through DC cannot read it.
 
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -30,7 +35,17 @@ const { values: opt } = parseArgs({
 
 const require = createRequire(import.meta.url);
 const DC_ENTRY = require.resolve('@wonderwhy-er/desktop-commander/package.json').replace(/package\.json$/, 'dist/index.js');
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
+
+const TOKEN = process.env.MCPRELAY_BRIDGE_TOKEN || '';
+delete process.env.MCPRELAY_BRIDGE_TOKEN;
+const digest = (s) => createHash('sha256').update(s).digest();
+const TOKEN_DIGEST = TOKEN ? digest(TOKEN) : null;
+function authorized(req) {
+  if (!TOKEN_DIGEST) return true;
+  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
+  return !!m && timingSafeEqual(digest(m[1]), TOKEN_DIGEST);
+}
 const SESSION_IDLE_MS = 30 * 60 * 1000;
 const RESTART_DELAY_MS = [1000, 2000, 5000, 10000];
 
@@ -223,6 +238,11 @@ const http = createServer(async (req, res) => {
     res.writeHead(404).end();
     return;
   }
+  if (!authorized(req)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(rpcError(null, -32001, 'Unauthorized')));
+    return;
+  }
   const sid = req.headers['mcp-session-id'];
   let session = sid ? sessions.get(sid) : undefined;
   if (sid && !session) {
@@ -262,4 +282,5 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 startDc();
 http.listen(Number(opt.port), opt.host, () => {
   log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (DC ${DC_ENTRY})`);
+  if (!TOKEN_DIGEST) log('WARNING: MCPRELAY_BRIDGE_TOKEN not set; /mcp accepts unauthenticated local requests');
 });

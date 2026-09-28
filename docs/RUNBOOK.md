@@ -31,21 +31,37 @@ ss -ltn | grep -E ':(443|18000|181[0-9][0-9])\b'     # node ports appear while t
 curl -s http://127.0.0.1:<port>/healthz               # node bridge through its tunnel
 ```
 
-## Windows node
+## Windows node (packaged app)
+
+Build on a dev machine (needs git, npm, Windows):
 
 ```powershell
-cd <repo>
-npm ci --prefix node-runtime
-node node-runtime\bridge.mjs --port 18001                      # terminal 1
-powershell -File scripts\node-tunnel.ps1 -VpsHost <vps-host> -RemotePort <port> `
-  -KeyFile $env:USERPROFILE\.ssh\mcprelay_node_<node> `
-  -KnownHosts $env:USERPROFILE\.ssh\mcprelay_known_hosts       # terminal 2
+powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1      # -> dist\MCPRelay
 ```
 
-Setup:
-- The node key is a dedicated ed25519 key. Only its public half goes to the VPS (`--node`).
-- `mcprelay_known_hosts` pins the VPS host key, so the tunnel runs with `StrictHostKeyChecking=yes`.
-- Desktop Commander settings live in `%USERPROFILE%\.claude-server-commander\config.json`. Set `"telemetryEnabled": false`.
+Install on the node as the user who should own the ChatGPT session (no admin rights):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dist\MCPRelay\install.ps1 -NodeName <node> -VpsHost <vps-host> `
+  -RemotePort <port> -PublicUrl https://<mcp-domain> [-KnownHostsFile <pinned known_hosts>]
+```
+
+What the installer does:
+- installs to `%LOCALAPPDATA%\Programs\MCPRelay` and adds a Start Menu shortcut;
+- enables start with Windows (`HKCU\...\Run`, starts hidden in the tray);
+- writes per-user state to `%APPDATA%\MCPRelay` (ACL: user + SYSTEM), generating what is missing: `bridge.token`, `node_ed25519`, and `known_hosts` (TOFU; verify the printed fingerprint).
+
+Register the node on the VPS with its public key and bridge token. Copy them over your own SSH session:
+
+```bash
+vps-install.sh ... --node <node>:<port>:node_ed25519.pub:bridge.token
+```
+
+Operate the app from the tray icon: green = connected, yellow = starting/connecting, red = stopped/not configured.
+- Closing the window hides it to the tray; **Quit** stops the bridge, Desktop Commander and the tunnel.
+- Logs: `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log`.
+- Desktop Commander uses the user's own `%USERPROFILE%\.claude-server-commander\config.json`; set `"telemetryEnabled": false`.
+- Uninstall: `%LOCALAPPDATA%\Programs\MCPRelay\uninstall.ps1 [-RemoveState]`.
 
 ## Connect ChatGPT (Owner)
 

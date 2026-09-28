@@ -36,6 +36,11 @@ jobs:
           echo '{"telemetryEnabled": false}' > "$HOME/.claude-server-commander/config.json"
       - name: Start bridge
         run: |
+          # Fresh random bridge token per run; exported for the smoke step.
+          token=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+          echo "::add-mask::$token"
+          echo "MCPRELAY_BRIDGE_TOKEN=$token" >> "$GITHUB_ENV"
+          export MCPRELAY_BRIDGE_TOKEN=$token
           node node-runtime/bridge.mjs --port 18001 > bridge.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:18001/healthz && exit 0
@@ -45,11 +50,11 @@ jobs:
       - name: Smoke test (AT-LOCAL)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            FIXTURE="$(cygpath -w "$HOME")\mcprelay-fixture"; OSNAME=windows
+            FIXTURE="$(cygpath -w "$HOME")\\mcprelay-fixture"; OSNAME=windows
           else
             FIXTURE="$HOME/mcprelay-fixture"; OSNAME=linux
           fi
-          node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME"
+          node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN
       - name: Listener must be loopback-only
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -59,6 +64,13 @@ jobs:
             ss -ltn | grep ':18001'
             ! ss -ltn | grep ':18001' | grep -v '127.0.0.1:18001'
           fi
+      - name: Build Windows tray app (built-in .NET Framework csc)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:winexe /out:MCPRelay.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll app\windows\MCPRelay.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Bridge log
         if: always()
         run: cat bridge.log || true

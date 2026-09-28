@@ -4,7 +4,7 @@
 #
 #   vps-install.sh --domain <mcp-domain> --bundle <mcp-gateway-*.tar.gz> \
 #                  --config-dir <dir with repo config/vps> \
-#                  --node <name>:<vps-port>:<node-pubkey-file> [--node ...] \
+#                  --node <name>:<vps-port>:<node-pubkey-file>[:<bridge-token-file>] [--node ...] \
 #                  [--gateway-user <name>]
 #
 # Secrets (gateway encryption key, gateway login password) are generated on the
@@ -83,8 +83,16 @@ umask 022
 
 backends=''
 for n in "${nodes[@]}"; do
-  IFS=: read -r name port _ <<<"$n"
-  backends+="  $name:"$'\n'"    url: http://127.0.0.1:$port/mcp"$'\n'"    auth:"$'\n'"      type: none"$'\n'
+  IFS=: read -r name port _ tokfile <<<"$n"
+  backends+="  $name:"$'\n'"    url: http://127.0.0.1:$port/mcp"$'\n'"    auth:"$'\n'
+  if [ -n "${tokfile:-}" ]; then
+    # Bridge bearer token: only the gateway may call the node's bridge.
+    tok=$(tr -d '[:space:]' < "$tokfile")
+    [ ${#tok} -ge 32 ] || { echo "bridge token in $tokfile is too short" >&2; exit 1; }
+    backends+="      type: bearer"$'\n'"      token: \"$tok\""$'\n'
+  else
+    backends+="      type: none"$'\n'
+  fi
 done
 python3 - "$cfg/gateway.template.yaml" /etc/mcprelay/gateway.yaml "$domain" "$gw_user" "$hash" "$backends" <<'PY'
 import sys
@@ -107,7 +115,7 @@ install -d -m 0700 -o mcptunnel -g mcptunnel /var/lib/mcptunnel/.ssh
 ak=/var/lib/mcptunnel/.ssh/authorized_keys
 : > "$ak.new"
 for n in "${nodes[@]}"; do
-  IFS=: read -r name port keyfile <<<"$n"
+  IFS=: read -r name port keyfile _ <<<"$n"
   key=$(awk 'NF>=2 && $1 ~ /^ssh-/ {print $1" "$2; exit}' "$keyfile")
   [ -n "$key" ] || { echo "no public key in $keyfile" >&2; exit 1; }
   echo "restrict,port-forwarding,permitlisten=\"127.0.0.1:$port\" $key mcprelay-node-$name" >> "$ak.new"

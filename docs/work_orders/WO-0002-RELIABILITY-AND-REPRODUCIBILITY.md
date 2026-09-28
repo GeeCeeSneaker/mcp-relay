@@ -1,6 +1,6 @@
 # WO-0002 — P2 Reliability and Reproducibility
 
-- Status: `PREAUTHORIZED`
+- Status: `IN_PROGRESS` (T1-T6 pass; T7-T9 pending Owner)
 - Dependency: WO-0001 generic E2E path works
 
 ## Objective

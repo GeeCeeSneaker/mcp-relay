@@ -1,6 +1,6 @@
 # WO-0003 — P3 Windows Packaging and Service Lifecycle
 
-- Status: `PREAUTHORIZED`
+- Status: `IN_PROGRESS` (package + per-user install working; ADR-0003)
 - Dependency: stable P2 runtime/config contract
 
 ## Objective
