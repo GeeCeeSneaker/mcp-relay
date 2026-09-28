@@ -30,7 +30,7 @@ const { values: opt } = parseArgs({
 
 const require = createRequire(import.meta.url);
 const DC_ENTRY = require.resolve('@wonderwhy-er/desktop-commander/package.json').replace(/package\.json$/, 'dist/index.js');
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const SESSION_IDLE_MS = 30 * 60 * 1000;
 const RESTART_DELAY_MS = [1000, 2000, 5000, 10000];
 
@@ -38,6 +38,22 @@ const log = (...a) => console.error(new Date().toISOString(), '[bridge]', ...a);
 const isRequest = (m) => 'method' in m && 'id' in m;
 const isResponse = (m) => !('method' in m) && 'id' in m;
 const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
+
+// DC tags some tools with MCP-Apps/ChatGPT widget metadata pointing at ~1.2 MB
+// ui:// HTML resources. Through a namespacing gateway those URIs no longer
+// resolve, and fetching them over the tunnel is slow. MCPRelay only needs the
+// tools themselves, so the bridge always hides the widget references.
+const UI_META_KEYS = ['ui/resourceUri', 'openai/outputTemplate', 'openai/widgetAccessible', 'ui'];
+function stripUiMeta(result) {
+  if (!Array.isArray(result?.tools)) return result;
+  const tools = result.tools.map((t) => {
+    if (!t._meta) return t;
+    const meta = Object.fromEntries(Object.entries(t._meta).filter(([k]) => !UI_META_KEYS.includes(k)));
+    const { _meta, ...rest } = t;
+    return Object.keys(meta).length ? { ...rest, _meta: meta } : rest;
+  });
+  return { ...result, tools };
+}
 
 // ---------------------------------------------------------------- DC child --
 let dc = null;             // StdioClientTransport of the running DC
@@ -109,7 +125,8 @@ function fromDc(msg) {
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
-    p.session.transport.send({ ...msg, id: p.id }).catch((e) => log('send to client failed:', e.message));
+    const out = p.method === 'tools/list' && msg.result ? { ...msg, result: stripUiMeta(msg.result) } : msg;
+    p.session.transport.send({ ...out, id: p.id }).catch((e) => log('send to client failed:', e.message));
     return;
   }
   if (isRequest(msg)) {

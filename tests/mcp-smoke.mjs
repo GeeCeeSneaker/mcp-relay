@@ -116,6 +116,12 @@ await check('tools/list contains required Desktop Commander tools', async () => 
   return `${tools.length} tools`;
 });
 
+await check('tools carry no UI widget references', async () => {
+  const { tools } = await a.listTools();
+  const withUi = tools.filter((t) => t._meta && ('openai/outputTemplate' in t._meta || 'ui/resourceUri' in t._meta));
+  expect(withUi.length === 0, `widget refs on: ${withUi.map((t) => t.name).join(', ')}`);
+});
+
 await check('create fixture directory', async () => {
   const r = await call(a, 'create_directory', { path: opt.fixture });
   expect(!r.isError, brief(r.text));
