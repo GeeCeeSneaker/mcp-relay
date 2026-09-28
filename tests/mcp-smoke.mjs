@@ -84,6 +84,20 @@ function expect(cond, message) {
 
 const brief = (s) => JSON.stringify(s.length > 160 ? `${s.slice(0, 160)}…` : s);
 
+// Poll read_process_output until new "tick" output appears. Slow hosts (CI
+// Windows runners) can return only an empty line at first. Lost state shows up
+// as "No session found" and fails immediately.
+async function readTicks(client, pid) {
+  let last = '';
+  for (let i = 0; i < 5; i++) {
+    const r = await call(client, 'read_process_output', { pid, timeout_ms: 2000 });
+    expect(!r.isError && !/No session found/i.test(r.text), brief(r.text));
+    if (/tick \d+/.test(r.text)) return;
+    last = r.text;
+  }
+  throw new Error(`no new output after 5 reads: ${brief(last)}`);
+}
+
 // --- session A -------------------------------------------------------------
 let a;
 let pid;
@@ -146,8 +160,7 @@ await check('start long-running process', async () => {
 await check('read long-running output (same session)', async () => {
   expect(pid, 'no pid');
   await sleep(1500);
-  const r = await call(a, 'read_process_output', { pid, timeout_ms: 2000 });
-  expect(!r.isError && /tick \d+/.test(r.text), brief(r.text));
+  await readTicks(a, pid);
 });
 
 await check('20 repeated sequential calls stay valid', async () => {
@@ -168,9 +181,7 @@ await check('second independent client connects', async () => {
 await check('process from first connection is visible from second connection', async () => {
   expect(pid && b, 'no pid or client');
   await sleep(1500);
-  const r = await call(b, 'read_process_output', { pid, timeout_ms: 2000 });
-  expect(!r.isError && !/No session found/i.test(r.text), brief(r.text));
-  expect(/tick \d+/.test(r.text), `no new output: ${brief(r.text)}`);
+  await readTicks(b, pid);
 });
 
 await check('terminate process from second connection', async () => {
