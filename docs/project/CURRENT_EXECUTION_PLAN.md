@@ -8,6 +8,7 @@ Current earliest phase: `P0 -> P1`, with later phases available automatically wh
 
 ## Current priority
 
+0. (ADR-0002) Start with P0-S1/S2: Desktop Commander statefulness through the local adapter, plus the shared smoke client. They need no Owner inputs. In parallel, request the Owner inputs listed in WO-0001: VPS access, DNS name, ChatGPT Developer mode.
 1. Prove the highest-risk compatibility boundaries first: local MCP transport, reverse tunnel, gateway/auth and actual ChatGPT connectivity.
 2. Reach a real Windows single-node end-to-end call before investing in packaging/platform work.
 3. Once P1 works, stabilize/reproduce it, package Windows, add multi-node, then Linux, then run full v1 qualification.
@@ -30,4 +31,4 @@ Reviewer monitors GitHub state and evidence, performs independent milestone/exac
 
 ## Immediate handoff to development team
 
-Read the nine documents listed in README, then execute P0/P1. Existing WO-0001 is the first vertical-slice work package; WO-0002..WO-0006 define the rest of the program. The team may create its own finer-grained Issues/PRs.
+Read the documents listed in README, then execute P0/P1. Existing WO-0001 is the first vertical-slice work package; WO-0002..WO-0006 define the rest of the program. The team may create its own finer-grained Issues/PRs.

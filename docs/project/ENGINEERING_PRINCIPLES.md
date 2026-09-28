@@ -25,12 +25,12 @@ A custom tunnel, auth server, MCP transport or device-control protocol requires 
 
 ## 3. One concern, one enforcement layer
 
-Each concern should have one primary owner:
+Each concern should have one primary owner. The current candidates are named in parentheses (see ADR-0002):
 
-- Caddy: public TLS termination/routing.
+- TLS ingress (existing VPS proxy or Caddy): public TLS termination/routing.
 - MCP gateway: public MCP authentication and backend aggregation.
-- rathole: outbound reverse tunnel/NAT traversal.
-- Supergateway: stdio-to-Streamable-HTTP adaptation.
+- Reverse tunnel (OpenSSH reverse forward; rathole/frp fallback): outbound NAT traversal.
+- Local adapter (Supergateway or minimal SDK bridge): stdio-to-Streamable-HTTP adaptation.
 - Desktop Commander: local tools and execution.
 
 Do not duplicate TLS, auth, policy or routing at multiple layers without a demonstrated failure mode.

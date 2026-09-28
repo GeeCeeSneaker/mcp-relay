@@ -12,9 +12,14 @@ Pass when, on the node without tunnel/gateway:
 - controlled file create/edit/write succeeds;
 - deterministic command returns `mcp-relay-ok`;
 - long-running process can be started and its output observed/terminated using the available Desktop Commander tool contract;
-- repeated sequential calls remain valid.
+- **state persistence:** a process started in one HTTP request/session can be read and terminated from a *separate* client connection/session (proves one shared DC instance, ADR-0002 F3);
+- repeated sequential calls remain valid;
+- the local adapter listens on loopback only (no `0.0.0.0`/`::` listener);
+- DC telemetry is disabled in the node configuration.
 
-Record exact Desktop Commander/Supergateway versions and any intentional tool restrictions.
+Record exact Desktop Commander/adapter versions, any intentional tool restrictions, idle RSS of the node process tree, and any observed third-party egress.
+
+The checks are implemented once in the project smoke client (`tests/`). AT-TUNNEL and AT-PUBLIC re-run the same checks against their URL.
 
 ## AT-TUNNEL — Reverse connectivity
 
@@ -117,7 +122,8 @@ Required negative tests:
 - tunnel with wrong node credential;
 - direct public access to per-node backend port;
 - secret scan of repository/release metadata;
-- node configuration does not bind local MCP backend to unnecessary public interfaces.
+- node configuration does not bind local MCP backend to unnecessary public interfaces;
+- a node's tunnel credential cannot open another node's backend port or obtain a shell on the VPS (with the OpenSSH tunnel: forward-only account, `permitlisten` restricted).
 
 This is not a penetration-test program. Test the actual trust boundary without inventing enterprise threat models.
 

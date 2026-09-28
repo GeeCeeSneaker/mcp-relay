@@ -16,10 +16,21 @@ Expose Desktop Commander capabilities locally through a network transport that c
 
 ### Required behavior
 - pinned compatible versions;
-- endpoint not exposed publicly/LAN by default;
+- endpoint not exposed publicly/LAN by default (**listener binds 127.0.0.1 only**);
 - `tools/list` and representative tool calls succeed;
 - stdout/stderr/protocol framing remain valid during repeated calls;
+- **exactly one long-lived DC process per node, shared by all requests and sessions**. Processes started through `start_process` stay addressable from later, independent requests and survive gateway/tunnel reconnects (ADR-0002 F3);
+- DC telemetry disabled (`telemetryEnabled: false`); DC keeps working with its third-party egress blocked;
 - no project-owned capability reimplementation.
+
+### Substitution rule
+Supergateway spawns a child per request or per session and binds all interfaces, which is expected to fail the requirements above. If P0-S1 confirms this, replace it with a minimal project-owned bridge that uses only the official MCP SDK:
+- one DC child;
+- loopback bind;
+- forwards JSON-RPC;
+- restarts DC if it exits.
+
+Target size is < 300 lines, with no framework and no new runtime.
 
 ### Acceptance
 See AT-LOCAL in `ACCEPTANCE_TEST_PLAN.md`.
@@ -30,7 +41,13 @@ See AT-LOCAL in `ACCEPTANCE_TEST_PLAN.md`.
 Carry the local MCP endpoint from NATed node to a VPS loopback backend through an outbound authenticated/encrypted connection.
 
 ### Candidate implementation
-`rathole client/server`.
+Evaluate in this order (ADR-0002 F4):
+
+1. **OpenSSH reverse forward.** Built-in Windows `ssh.exe` connects to the existing VPS `sshd` with `-N -R 127.0.0.1:<node port>:127.0.0.1:<local port>`, `ExitOnForwardFailure=yes` and `ServerAliveInterval`. It uses a dedicated forward-only VPS account and one key per node with `restrict,port-forwarding,permitlisten="127.0.0.1:<node port>"`. Reconnect comes from a restart loop (P1 script, later the M6 lifecycle manager).
+2. `rathole` v0.5.0 (Noise transport).
+3. `frp` (TLS + token).
+
+Choose the first candidate that passes AT-TUNNEL.
 
 ### Required behavior
 - node initiates connection;
@@ -49,7 +66,20 @@ Team may replace rathole with a comparably narrow reverse-tunnel implementation 
 Present one standard remote MCP surface, authenticate the remote client and route/aggregate one or more node backends.
 
 ### Candidate implementation
-`R0Wi/mcp-gateway` is the first candidate, not a protected choice.
+`R0Wi/mcp-gateway` is the first candidate, not a protected choice. It is pinned to an exact commit or image digest because it is a low-adoption, single-maintainer project; review the diff before every upgrade.
+
+### Client requirements (ChatGPT, verified from OpenAI docs 2026-09)
+ChatGPT supports only OAuth for protected connectors. It cannot send static API keys or custom headers.
+
+Required:
+- RFC 9728 protected-resource metadata and RFC 8414 AS metadata;
+- authorization code with PKCE `S256`;
+- CIMD (preferred) or DCR;
+- the RFC 8707 `resource` parameter bound into the token audience.
+
+Recommended: the RFC 9207 `iss` response parameter.
+
+Developer mode must be enabled on the Owner's ChatGPT account.
 
 ### Required behavior
 - works with current ChatGPT remote MCP auth/discovery flow;
@@ -67,7 +97,7 @@ A different gateway is autonomous if it replaces the same single responsibility 
 Own public HTTPS certificate/termination and minimal reverse proxying.
 
 ### Candidate implementation
-Caddy.
+Reuse the reverse proxy already serving :443 on the VPS, if one exists, by adding one site/route. Otherwise use Caddy.
 
 ### Required behavior
 - valid public TLS;
@@ -100,7 +130,12 @@ For self-use v1, static files plus a small provisioning script are acceptable. N
 Install/run/restart/uninstall the node predictably.
 
 ### Windows
-Expected implementation: self-contained package with pinned runtime/dependencies plus native Windows service management or a very small proven service wrapper.
+Expected implementation: a self-contained package with pinned runtime/dependencies plus a native OS-managed lifecycle.
+
+That lifecycle must run **as the interactive user**. DC commands must have the user's identity, profile and environment, not LocalSystem/session 0 (ADR-0002 F7). Candidates:
+- a per-user Scheduled Task (at logon, restart on failure);
+- a service configured with the user's account;
+- a very small proven wrapper.
 
 Required operations:
 - install/configure;
@@ -156,6 +191,8 @@ The team must experimentally choose the simplest standards-compatible approach:
 3. another gateway-native mechanism.
 
 Choice criteria: ChatGPT compatibility, unambiguous node selection, no tool-name collisions, minimum configuration/code. Do not build a fleet control plane to solve namespacing.
+
+First choice: option 1, using `R0Wi/mcp-gateway`'s native per-backend prefix (`win01_start_process`). Node names are short `[a-z0-9]` identifiers so prefixed tool names stay well within the 64-character tool-name limit.
 
 ## Expected repository shape
 

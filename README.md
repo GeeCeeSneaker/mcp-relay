@@ -13,26 +13,26 @@ ChatGPT / MCP client
         |
      HTTPS + auth
         |
-      Caddy                 VPS
+   TLS ingress              VPS   (existing proxy or Caddy)
         |
-   MCP Gateway
+   MCP Gateway + OAuth AS         (R0Wi/mcp-gateway candidate)
         |
   loopback backend
         |
-   reverse tunnel server
+   reverse tunnel server          (existing sshd candidate)
         |
    encrypted outbound tunnel
         |
-   reverse tunnel client    Node
+   reverse tunnel client    Node  (built-in ssh.exe candidate)
         |
-   Supergateway
+   stdio<->HTTP adapter           (Supergateway or minimal SDK bridge)
         |
-   Desktop Commander
+   Desktop Commander              (one long-lived instance)
         |
  local files/processes/terminal
 ```
 
-Component names are provisional. Responsibilities and external contracts matter more than preserving a specific package. The development team may replace a candidate component with a simpler/equivalent component inside the same responsibility boundary when evidence justifies it; architecture/trust-boundary expansion requires escalation.
+Candidate ordering and the evidence behind it are in `docs/adr/ADR-0002-P0-DESK-RESEARCH-REFINEMENT.md`. Component names are provisional. Responsibilities and external contracts matter more than preserving a specific package. The development team may replace a candidate component with a simpler/equivalent component inside the same responsibility boundary when evidence justifies it; architecture/trust-boundary expansion requires escalation.
 
 ## Non-negotiable rules
 
@@ -57,5 +57,6 @@ A new development team should read, in order:
 7. `docs/project/ACCEPTANCE_TEST_PLAN.md`
 8. `docs/project/DEVELOPMENT_MANAGEMENT.md`
 9. `docs/project/RESOURCE_BUDGETS.md`
+10. `docs/adr/` (ADR-0001 baseline, ADR-0002 P0 refinement)
 
 The entire v1 execution program in `MASTER_IMPLEMENTATION_PLAN.md` is pre-authorized. Phase Work Orders under `docs/work_orders/` are durable handoff/checklist artifacts, not gates requiring Reviewer permission between every step.

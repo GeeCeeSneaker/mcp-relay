@@ -49,6 +49,12 @@ ChatGPT / MCP client
 
 The named starting candidates are Caddy, a lightweight MCP gateway, rathole, Supergateway and Desktop Commander. Candidate names do not create permanent architecture obligations.
 
+ADR-0002 refines the candidate order from desk research:
+- **Reverse tunnel:** OpenSSH reverse forwarding is tried first. It reuses the built-in Windows client and the existing VPS `sshd`, so it needs no new process and no new public port.
+- **Local adapter:** Supergateway is tested first. Its per-request/per-session child model is expected to break Desktop Commander's process state; the fallback is a minimal SDK-only bridge.
+- **TLS ingress:** reuse an existing VPS reverse proxy if one is already present.
+- **Gateway auth:** the gateway must be a full OAuth 2.1 AS, because ChatGPT supports only OAuth for protected connectors.
+
 ## 4. Responsibility boundaries
 
 ### Desktop Commander / local capability provider

@@ -63,6 +63,21 @@ Validate the risky external compatibility assumptions before writing substantial
 4. Confirm Caddy/public TLS route.
 5. Record exact versions and incompatibilities.
 
+### Spike sequence (refined by ADR-0002)
+
+Ordered by risk and by dependency on Owner inputs. Local spikes need no VPS access and start immediately.
+
+| Spike | Boundary | Needs | Pass criteria | If it fails |
+|---|---|---|---|---|
+| P0-S1 | M1 local adapter | node only | AT-LOCAL incl. **process state persists across separate HTTP requests/sessions**, loopback-only listener, DC telemetry off, idle RSS recorded | SDK bridge fallback (ADR-0002 F3) |
+| P0-S2 | shared smoke client | node only | one `tests/` script runs the same AT checks against any URL (+ optional bearer) | — (test tooling) |
+| P0-S0 | VPS inventory | Owner: VPS SSH access | OS, free RAM, existing :443 proxy, sshd config, Docker/Python availability recorded (sanitized) | — |
+| P0-S3 | M2 tunnel | S1 + S0 | AT-TUNNEL via OpenSSH reverse forward (forward-only key, `permitlisten`, loopback bind); wrong key rejected; recovery ≤ 60 s with restart loop | rathole v0.5.0, then frp |
+| P0-S4 | M3 gateway | S0 | pinned gateway on VPS loopback; standard MCP client completes DCR/CIMD + PKCE login; unauthenticated `/mcp` → 401 with `resource_metadata`; namespaced DC tools listed | config fix → upstream patch → alternative gateway |
+| P0-S5 | M4 + ChatGPT | S3 + S4 + Owner: DNS name, ChatGPT Developer mode | valid public TLS; AT-PUBLIC; AT-CHATGPT or `OWNER_VALIDATION_REQUIRED` | reverse-proxy/gateway config; RFC 9207 gap assessed here |
+
+S1 and S2 run first. S0 runs as soon as the Owner provides VPS access. S3 and S4 can run in parallel after that.
+
 ### Team freedom
 If a candidate fails, compare the smallest equivalent alternatives for that same module. Do not preserve a candidate for architectural pride.
 
@@ -127,7 +142,7 @@ A new Windows machine can be brought online with minimal manual setup.
 - freeze exact runtime/dependency set;
 - choose smallest packaging approach based on measured chain;
 - package node dependencies or deterministic offline/installer acquisition;
-- one normal service lifecycle visible to operator where practical;
+- one normal service lifecycle visible to operator where practical, **running in the interactive user's context** so DC commands have the user's identity/profile (ADR-0002 F7; per-user Scheduled Task vs. user-account service chosen by evidence);
 - install/start/stop/status/restart/uninstall;
 - reboot auto-start;
 - config/secret location documented;
@@ -144,6 +159,8 @@ Fresh Windows validation: install -> configure -> connect -> ChatGPT/remote tool
 
 ### Objective
 Operate at least two Windows nodes through the same VPS/public system without architecture changes.
+
+First-choice mechanism (ADR-0002): one gateway backend per node, using the gateway's native `<node>_<tool>` namespacing, one tunnel port per node, and one forward-only SSH key per node restricted by `permitlisten`.
 
 ### Required work
 - stable node naming/identity;
