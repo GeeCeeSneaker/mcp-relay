@@ -15,9 +15,18 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 git -C "$work" init -q src
+git -C "$work/src" config core.autocrlf false   # LF tree, so LF patches apply on Windows too
 git -C "$work/src" fetch -q --depth 1 "$GATEWAY_REPO" "$GATEWAY_COMMIT"
 git -C "$work/src" checkout -q FETCH_HEAD
 test "$(git -C "$work/src" rev-parse HEAD)" = "$GATEWAY_COMMIT"
+
+# MCPRelay patches on top of the pinned commit (documented in components.lock).
+repo=$(cd "$(dirname "$0")/.." && pwd)
+for p in "$repo"/patches/mcp-gateway/*.patch; do
+  [ -e "$p" ] || continue
+  git -C "$work/src" apply --whitespace=nowarn "$p"
+  echo "applied $(basename "$p")"
+done
 
 (cd "$work/src/ui" && npm ci --no-audit --no-fund --loglevel=error && npm run build --silent)
 test -f "$work/src/src/mcp_gateway/static/ui/index.html"

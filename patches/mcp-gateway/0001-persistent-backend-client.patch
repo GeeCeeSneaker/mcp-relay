@@ -1,0 +1,75 @@
+diff --git a/src/mcp_gateway/gateway.py b/src/mcp_gateway/gateway.py
+index 7fec90f..b7ac1a8 100644
+--- a/src/mcp_gateway/gateway.py
++++ b/src/mcp_gateway/gateway.py
+@@ -10,6 +10,7 @@ listing instead of breaking the whole gateway.
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import base64
+ import dataclasses
+ import functools
+@@ -17,7 +18,7 @@ import logging
+ 
+ from fastmcp import Client, FastMCP
+ from fastmcp.client.transports.base import TransportOptions
+-from fastmcp.server import create_proxy
++from fastmcp.server.providers.proxy import FastMCPProxy
+ from mcp.types import Icon, ToolAnnotations
+ 
+ from mcp_gateway.config import GatewayConfig
+@@ -50,6 +51,40 @@ def _server_icons() -> list[Icon]:
+     return [Icon(src=data_uri, mime_type="image/svg+xml")]
+ 
+ 
++def _persistent_client_factory(name: str, template: Client):
++    """Client factory that reuses ONE connected backend client (MCPRelay patch).
++
++    FastMCP proxies built from a disconnected Client open a fresh backend
++    connection for every request (era negotiation, and for handshake-era
++    backends initialize/initialized/GET/DELETE). Over a high-latency reverse
++    tunnel that dominated per-call latency. Here the first request connects a
++    copy of the configured client and later requests reuse it; a copy that has
++    disconnected is replaced. Copies keep the no-header-forwarding transport.
++    """
++    lock = asyncio.Lock()
++    current: list[Client] = []
++
++    async def factory() -> Client:
++        if current and current[0].is_connected():
++            return current[0]
++        async with lock:
++            if current and current[0].is_connected():
++                return current[0]
++            if current:
++                try:
++                    await current[0].__aexit__(None, None, None)
++                except Exception:  # noqa: BLE001 - stale client, best effort
++                    pass
++                current.clear()
++            client = template.new()
++            await client.__aenter__()
++            logger.info("Backend %s: persistent client connected (protocol %s)", name, client.protocol_version)
++            current.append(client)
++            return client
++
++    return factory
++
++
+ def _require_no_header_forwarding(name: str, client: Client) -> None:
+     """Refuse to start unless `client` can't pass the caller's token upstream.
+ 
+@@ -129,7 +164,11 @@ def build_gateway(
+             logger.info("Backend %s is disabled; skipping", name)
+             continue
+         _require_no_header_forwarding(name, clients[name])
+-        proxy = create_proxy(clients[name], name=f"proxy-{name}", mask_error_details=True)
++        proxy = FastMCPProxy(
++            client_factory=_persistent_client_factory(name, clients[name]),
++            name=f"proxy-{name}",
++            mask_error_details=True,
++        )
+         mcp.mount(proxy, namespace=name)
+         logger.info("Mounted backend %s (%s, auth=%s)", name, backend.url, backend.auth.type)
+ 

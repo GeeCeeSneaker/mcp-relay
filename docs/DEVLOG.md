@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-09-29 — Option A deployed; desk prototype compared (ADR-0004/0005)
+
+- A (ADR-0005): a 41-line gateway patch reuses one connected backend client, applied by `build-gateway-bundle.sh`. Public p50 went 0.70 s → 0.28 s (sustained 0.27 s). Fault run: 1/50 calls failed at the tunnel drop, then the client reconnected in ~2 s.
+- Desk prototype (ADR-0004, PROPOSED) is ~230 lines on SDK v2 with DC-compatible tools, swapped in behind the tray app on the same public path.
+  - It passed all smoke checks (both eras, local + public) and 9/9 extended checks. DC failed 2 of them: Chinese output was garbled, and force_terminate orphaned the child.
+  - Footprint: 7 vs 547 packages, 60 vs 205 MiB idle, < 1 s vs 5–30 s start, file ops 15 vs 593 ms. Commands are slower with its PowerShell default.
+- The tray app runs DC again. The Owner decides on ADR-0004. CI now also smoke-tests the prototype on Windows and Linux.
+
 ## 2026-09-28 — Performance: bridge 0.3.1 / 0.4.0
 
 - The measurement (`tests/perf-probe.py`) found tunnel RTT 38 ms and 100% success, with per-call latency dominated by the gateway opening fresh backend sessions over the tunnel (2 sessions / 12 HTTP exchanges per public call).

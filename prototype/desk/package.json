@@ -1,0 +1,11 @@
+{
+  "name": "mcprelay-desk-prototype",
+  "private": true,
+  "description": "PROTOTYPE minimal local capability server (compare with Desktop Commander, ADR-0004).",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/node": "2.1.0",
+    "@modelcontextprotocol/server": "2.2.0"
+  }
+}
