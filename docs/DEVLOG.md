@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-09-28 — Public-repository hygiene tightened
+
+The repository is public, and the Owner requires that no server information be published.
+- Evidence now records generic findings only. Host-identifying and host-profiling details (provider/region, OS/patch state, SSH settings, co-hosted workloads, local machine build) were removed from `P0-S0` and `P0-S1`. The full inventory stays outside Git.
+- `DEVELOPMENT_MANAGEMENT.md` §9 lists what must never be committed and requires placeholders in config.
+- The new `scripts/check-public-hygiene.sh` CI job blocks public IPv4 literals, private keys, common token formats and non-noreply author emails.
+- Audit: no IPs, hostnames, account names, key file names or domain were found anywhere in history or PR refs.
+
 ## 2026-09-27 — P0-S1/S2: local adapter decided (bridge replaces Supergateway)
 
 - Added `tests/mcp-smoke.mjs`, a shared AT-LOCAL/TUNNEL/PUBLIC smoke client (official SDK).

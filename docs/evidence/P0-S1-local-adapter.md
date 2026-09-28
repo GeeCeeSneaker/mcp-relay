@@ -1,7 +1,7 @@
 # P0-S1 — Local Adapter (M1) Evidence
 
 - Date: 2026-09-27
-- Node under test: Owner's Windows 11 Pro for Workstations 10.0.26200, Node.js v24.15.0
+- Node under test: Owner's Windows 11 workstation, Node.js v24.15.0
 - Desktop Commander: `@wonderwhy-er/desktop-commander@0.2.51`
 - Smoke client: `tests/mcp-smoke.mjs` (`@modelcontextprotocol/sdk@1.30.1`, handshake-era protocol 2025-11-25)
 - Isolation: DC ran with `USERPROFILE`/`HOME` pointing to a scratch directory seeded with `{"telemetryEnabled": false}`, so the Owner's live DC config was not touched. The test fixture was inside that directory (DC's default `allowedDirectories` is the user home).
