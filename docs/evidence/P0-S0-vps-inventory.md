@@ -30,3 +30,30 @@
    - Compliant options: (a) a domain with ICP filing on this VPS; (b) a VPS region outside mainland China for the public ingress.
    - Either way, reachability from outside China must be proven before AT-CHATGPT, for example from a GitHub-hosted runner.
 6. **Security (Owner action recommended, not a project change):** key-based SSH works. Disabling SSH password authentication would remove the brute-force exposure the host-security agent is already reacting to.
+
+---
+
+# Candidate VPS #2 — Alibaba Cloud Seoul (2026-09-28)
+
+Proposed by the Owner after the mainland-region finding above. Inspected read-only as `root` with an Owner-provided key.
+
+| Item | Value |
+|---|---|
+| Provider / region | Alibaba Cloud, `ap-northeast-2` (Seoul), **no ICP requirement** |
+| OS | **CentOS Linux 8, end-of-life since 2021-12** (no security updates), kernel 4.18, OpenSSH 8.0p1 |
+| CPU / RAM / swap | 2 vCPU / 1.7 GiB (~0.9 GiB available) / 2 GiB |
+| Disk | 40 GiB, 39% used |
+| Existing workloads | **shared host.** nginx 1.30 on :80/:443 (catch-all `server_name _` → an existing Owner app on loopback), plus other Owner services. It must not be disturbed |
+| Tooling | Python 3.11.9, nginx with `stream`/`ssl_preread`; no Docker, uv, Caddy or Node |
+| sshd | key-only auth, `AllowTcpForwarding yes`, `GatewayPorts no` |
+| Egress | `api.openai.com` reachable in ~0.4 s |
+
+## Consequences
+
+- **M4:** reuse the existing nginx (ADR-0002 F5). Add one SNI `server` block for the MCPRelay hostname in its own file, so the existing site is untouched.
+  - The file must not become the :443 default. conf.d files load alphabetically and the current catch-all has no `default_server`, so a file sorting before it would take over unknown SNI.
+  - Change procedure: `nginx -t`, then reload; rollback = delete the file and reload.
+- **Certificate:** there is no ACME client yet. A hostname (DNS A record) is required. Use a standalone ACME client with the existing HTTP-01 webroot or DNS-01. Caddy is not needed.
+- **M3:** Python 3.11 is present, so run the gateway under `uv` + systemd as a dedicated unprivileged user on loopback. The expected ~100–150 MiB fits the ~0.9 GiB available.
+- **M2:** OpenSSH reverse forward to a dedicated forward-only account. `GatewayPorts no` keeps forwards on loopback.
+- **Risk:** an end-of-life OS terminating the public OAuth/MCP boundary is below the project's security bar for v1. Acceptable for P0/P1 spikes. A supported OS (rebuild or migration) is a P6 release condition, and the Owner decides when.
