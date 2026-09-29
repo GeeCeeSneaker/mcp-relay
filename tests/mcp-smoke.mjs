@@ -519,7 +519,7 @@ await check('audit log records calls without arguments and stays within its cap'
   // The newest entries may sit in the rotated file if the log just rolled over.
   let text = '';
   for (const p of [`${st.audit_log}.1`, st.audit_log]) {
-    const r = await call(b, 'read_file', { path: p, offset: -40 });
+    const r = await call(b, 'read_file', { path: p, offset: -250 });
     if (!r.isError) text += `${r.text.split('\n\n').slice(1).join('\n\n')}\n`;
   }
   const lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
