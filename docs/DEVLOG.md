@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-09-29 — Node server v2.2.0: agent-facing contract
+
+Implements a review of the live system.
+- Searches and listings stop at their own budgets with partial results; a timed-out call now aborts its work. Before this, a timed-out `search_files` kept running in the background.
+- Opaque process handles are required for read/input/terminate.
+- Stable error codes carry a next action (fix_args / ask_user / retry_later / stop). They replace the generic `exception` and `tool_error`.
+- `catalog_version` covers the whole catalog.
+- Audit lines gain boot/call ids and the PID for process operations; arguments are still never logged.
+- AT-LOCAL and SYSTEM_REQUIREMENTS updated to the fixed risk-class interface.
+- Evidence: `docs/evidence/P2-node-2.2-agent-contract-2026-09-29.md`.
+
 ## 2026-09-29 — Node server v2.1.0: guard lists; wider file roots
 
 - **Owner decision:** file roots = user profile + the whole data drive, and system folders get a denylist.

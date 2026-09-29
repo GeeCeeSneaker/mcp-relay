@@ -20,7 +20,7 @@
 
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { homedir, hostname, arch, release } from 'node:os';
 import { parseArgs } from 'node:util';
 import fs from 'node:fs/promises';
@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -100,8 +100,8 @@ function guardOf(real) { // 'protected' | 'read-only' | null
 const holdsGuarded = (real) => [...PROTECTED, ...READ_ONLY].some((d) => under(norm(d), real));
 function assertGuard(real, p, mode) {
   const g = guardOf(real);
-  if (g === 'protected') throw new Error(`Protected path: ${p}. Credential and MCPRelay configuration folders are off-limits to file capabilities.`);
-  if (g === 'read-only' && mode === 'write') throw new Error(`Read-only path: ${p}. File capabilities do not change system folders or MCPRelay's program and logs.`);
+  if (g === 'protected') fail('protected_path', `Protected path: ${p}. Credential and MCPRelay configuration folders are off-limits to file capabilities.`);
+  if (g === 'read-only' && mode === 'write') fail('read_only_path', `Read-only path: ${p}. File capabilities do not change system folders or MCPRelay's program and logs.`);
 }
 async function realish(p) {
   // realpath of the longest existing prefix, so symlinks/junctions cannot escape the roots
@@ -112,10 +112,10 @@ async function realish(p) {
   }
 }
 async function allowedPath(p, mode = 'read') {
-  if (typeof p !== 'string' || !p) throw new ProtocolError(-32602, 'path is required');
+  if (typeof p !== 'string' || !p) fail('invalid_args', 'path is required');
   const real = await realish(p);
   const x = norm(real);
-  if (!ALLOWED.some((root) => under(x, root))) throw new Error(`Path not allowed: ${p}. Must be within one of these directories: ${ALLOWED.join(', ')}`);
+  if (!ALLOWED.some((root) => under(x, root))) fail('path_not_allowed', `Path not allowed: ${p}. Must be within one of these directories: ${ALLOWED.join(', ')}`);
   assertGuard(real, p, mode);
   return real;
 }
@@ -125,41 +125,87 @@ const text = (t, isError = false) => {
   const s = t.length > MAX_RESULT_CHARS ? `${t.slice(0, MAX_RESULT_CHARS)}\n[truncated: result exceeded ${MAX_RESULT_CHARS} characters]` : t;
   return { content: [{ type: 'text', text: s }], ...(isError ? { isError: true } : {}) };
 };
+
+// Stable error codes for agents. Every failed call returns
+// "Error [<code>]: <message> (next: <action>)" plus _meta["io.mcprelay/error"],
+// and the audit log records the same code. action tells the caller what to do:
+// fix_args = change the arguments and retry; ask_user = stop and ask the user;
+// retry_later = transient; stop = unexpected server-side failure.
+const ERRORS = {
+  invalid_args: 'fix_args', unknown_capability: 'fix_args', wrong_class: 'fix_args', path_not_allowed: 'fix_args',
+  not_found: 'fix_args', already_exists: 'fix_args', not_empty: 'fix_args', is_a_directory: 'fix_args', not_a_directory: 'fix_args',
+  too_large: 'fix_args', binary_file: 'fix_args', no_match: 'fix_args', spawn_failed: 'fix_args',
+  bad_handle: 'fix_args', process_exited: 'fix_args',
+  protected_path: 'ask_user', read_only_path: 'ask_user', permission_denied: 'ask_user',
+  timeout: 'retry_later', busy: 'retry_later',
+  internal_error: 'stop',
+};
+const NEXT = { fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
+class CapError extends Error { constructor(code, message) { super(message); this.code = code; } }
+const fail = (code, message) => { throw new CapError(code, message); };
+const ERRNO = { ENOENT: 'not_found', EEXIST: 'already_exists', ENOTEMPTY: 'not_empty', EISDIR: 'is_a_directory', ENOTDIR: 'not_a_directory',
+  EACCES: 'permission_denied', EPERM: 'permission_denied', EBUSY: 'busy', EMFILE: 'busy' };
+function errorResult(code, message) {
+  const action = ERRORS[code] || 'stop';
+  return { ...text(`Error [${code}]: ${message} (next: ${NEXT[action]})`, true), _meta: { 'io.mcprelay/error': { code, action } } };
+}
+const codeOf = (e) => (e instanceof CapError ? e.code : e instanceof ProtocolError ? 'invalid_args' : ERRNO[e?.code] || 'internal_error');
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const withTimeout = (promise, ms, what) => {
+// Bounds a call. On timeout the AbortController is aborted, so long-running
+// capabilities (search, listing, hashing) actually stop instead of running on.
+const withTimeout = (promise, ms, what, ac) => {
   let timer;
-  return Promise.race([promise, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what} timed out after ${ms / 1000}s`)), ms); })])
+  return Promise.race([promise, new Promise((_, rej) => { timer = setTimeout(() => { ac?.abort(); rej(new CapError('timeout', `${what} timed out after ${ms / 1000}s`)); }, ms); })])
     .finally(() => clearTimeout(timer));
 };
 
-async function listDir(dir, depth, prefix = '', out = []) {
+// Walk budgets: stop early with partial results (well inside CALL_TIMEOUT_MS)
+// instead of timing out, and stop at once when the call is aborted.
+const LIST_BUDGET_MS = 30_000;
+const SEARCH_BUDGET_MS = Number(process.env.MCPRELAY_SEARCH_BUDGET_MS) || 60_000; // env override for tests
+const SEARCH_MAX_ENTRIES = 200_000;
+
+async function listDir(dir, depth, prefix = '', out = [], lim = { deadline: Date.now() + LIST_BUDGET_MS, signal: null }) {
+  if (lim.signal?.aborted) return out;
+  if (Date.now() > lim.deadline) { if (!lim.stopped) { lim.stopped = true; out.push(`[WARNING] listing stopped after ${LIST_BUDGET_MS / 1000} s; use a smaller depth or a subfolder`); } return out; }
   let entries;
   try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch (e) { out.push(`[DENIED] ${prefix}(${e.code})`); return out; }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   for (const e of entries) {
     if (out.length >= 5000) { out.push('[WARNING] listing truncated at 5000 entries'); return out; }
+    if (lim.stopped || lim.signal?.aborted) return out;
     const rel = prefix + e.name;
     if (e.isDirectory()) {
       const full = path.join(dir, e.name);
       if (guardOf(full) === 'protected') { out.push(`[DIR] ${rel} (protected, not listed)`); continue; }
       out.push(`[DIR] ${rel}`);
-      if (depth > 1) await listDir(full, depth - 1, rel + path.sep, out);
+      if (depth > 1) await listDir(full, depth - 1, rel + path.sep, out, lim);
     } else out.push(`[FILE] ${rel}`);
   }
   return out;
 }
 
-async function searchFiles(root, namePattern, contentText, max) {
+async function searchFiles(root, namePattern, contentText, max, signal) {
   // File names: glob (* and ?). Content: case-insensitive literal text, never a
   // user regex (a pathological pattern could block the event loop).
+  // Cooperative limits: checked before every directory and every file read.
   const nameRe = namePattern ? new RegExp(`^${String(namePattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i') : null;
   const needle = contentText ? String(contentText).toLowerCase() : null;
-  const hits = []; const stack = [root]; let visited = 0;
-  while (stack.length && hits.length < max && visited < 200_000) {
+  const hits = []; const stack = [root]; let visited = 0; let stopped = null;
+  const deadline = Date.now() + SEARCH_BUDGET_MS;
+  const over = () => {
+    if (signal?.aborted) stopped = 'aborted';
+    else if (Date.now() > deadline) stopped = `time budget (${SEARCH_BUDGET_MS / 1000} s)`;
+    else if (visited >= SEARCH_MAX_ENTRIES) stopped = `entry limit (${SEARCH_MAX_ENTRIES})`;
+    return stopped;
+  };
+  while (stack.length && hits.length < max && !over()) {
     const dir = stack.pop();
     let entries; try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
       visited++;
+      if (over()) break;
       if (e.isSymbolicLink()) continue; // links/junctions could lead outside the allowed roots
       const full = path.join(dir, e.name);
       if (guardOf(full) === 'protected') continue; // never search credential stores
@@ -176,11 +222,22 @@ async function searchFiles(root, namePattern, contentText, max) {
       if (hits.length >= max) break;
     }
   }
-  return hits;
+  return { hits, visited, stopped: stopped === 'aborted' ? null : stopped };
 }
 
 // -------------------------------------------------------------- processes --
-const sessions = new Map(); // pid -> { child, out, readPos, exitCode, shell, started }
+const sessions = new Map(); // pid -> { child, out, readPos, exitCode, shell, started, handle }
+// Opaque per-process handles: read/input/terminate need the handle returned by
+// start_process, so one agent cannot act on another agent's process by PID.
+// Handles work across connections; list_sessions never shows them.
+const handles = new Map(); // handle -> pid
+function sessionOf(handle, { active = false } = {}) {
+  const pid = typeof handle === 'string' ? handles.get(handle) : undefined;
+  const s = pid === undefined ? undefined : sessions.get(pid);
+  if (!s) fail('bad_handle', 'Unknown or expired process handle. Use the handle returned by start_process (exited sessions expire after 10 min); list_sessions shows PIDs only.');
+  if (active && s.exitCode !== null) fail('process_exited', `Process ${pid} already exited with code ${s.exitCode}.`);
+  return [pid, s];
+}
 const running = () => [...sessions.values()].filter((s) => s.exitCode === null).length;
 function shellInvocation(command, shell) {
   if (WIN) {
@@ -210,24 +267,24 @@ async function waitQuiet(s, timeoutMs, { returnOnQuiet = true } = {}) {
 function takeOutput(s) { const chunk = s.out.slice(s.readPos); s.readPos = s.out.length; return chunk; }
 
 async function startProcess({ command, timeout_ms: timeoutMs = 10_000, shell }) {
-  if (typeof command !== 'string' || !command) throw new ProtocolError(-32602, 'command is required');
-  if (running() >= MAX_RUNNING) return text(`Too many running processes (${MAX_RUNNING}); terminate some with force_terminate first.`, true);
+  if (typeof command !== 'string' || !command) fail('invalid_args', 'command is required');
+  if (running() >= MAX_RUNNING) fail('busy', `Too many running processes (${MAX_RUNNING}); terminate some with force_terminate first.`);
   const [file, args] = shellInvocation(command, shell);
   const child = spawn(file, args, { cwd: homedir(), env: process.env, windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'] });
-  const s = { child, out: '', readPos: 0, exitCode: null, shell: path.basename(file), started: Date.now() };
+  const s = { child, out: '', readPos: 0, exitCode: null, shell: path.basename(file), started: Date.now(), handle: `p_${randomBytes(9).toString('base64url')}` };
   const append = (d) => {
     s.out += d.toString('utf8');
     if (s.out.length > MAX_SESSION_OUTPUT) { const cut = s.out.length - MAX_SESSION_OUTPUT; s.out = s.out.slice(cut); s.readPos = Math.max(0, s.readPos - cut); }
   };
   child.stdout.on('data', append); child.stderr.on('data', append);
   child.stdin.on('error', () => {}); // writing to a process that already exited must not crash the server
-  child.on('exit', (code) => { s.exitCode = code ?? -1; setTimeout(() => sessions.delete(child.pid), EXITED_SESSION_TTL_MS).unref(); });
+  child.on('exit', (code) => { s.exitCode = code ?? -1; setTimeout(() => { sessions.delete(child.pid); handles.delete(s.handle); }, EXITED_SESSION_TTL_MS).unref(); });
   const spawnError = await new Promise((r) => { child.once('spawn', () => r(null)); child.once('error', r); });
-  if (spawnError || !child.pid) return text(`Failed to start (${spawnError?.message || 'unknown error'}): ${command}`, true);
-  sessions.set(child.pid, s);
+  if (spawnError || !child.pid) fail('spawn_failed', `Failed to start (${spawnError?.message || 'unknown error'}); check args.shell`);
+  sessions.set(child.pid, s); handles.set(s.handle, child.pid);
   await waitQuiet(s, Math.min(Math.max(timeoutMs, 0), CALL_TIMEOUT_MS - 5000));
-  const status = s.exitCode === null ? '\nProcess still running; use read_process_output to get more.' : `\nProcess finished with exit code ${s.exitCode}.`;
-  return text(`Process started with PID ${child.pid} (shell: ${s.shell})\nInitial output:\n${takeOutput(s)}${status}`);
+  const status = s.exitCode === null ? `\nProcess still running; use read_process_output with handle ${s.handle} to get more.` : `\nProcess finished with exit code ${s.exitCode}.`;
+  return { ...text(`Process started with PID ${child.pid}, handle ${s.handle} (shell: ${s.shell})\nInitial output:\n${takeOutput(s)}${status}`), auditPid: child.pid };
 }
 
 // --------------------------------------------------- remove / hash / procs --
@@ -235,27 +292,27 @@ const STARTED_AT = Date.now();
 const insideRoot = (x) => ALLOWED.some((root) => { const r = norm(root); return x.startsWith(r.endsWith(path.sep) ? r : r + path.sep); });
 
 async function removePath(p, recursive) {
-  if (typeof p !== 'string' || !p) throw new ProtocolError(-32602, 'path is required');
+  if (typeof p !== 'string' || !p) fail('invalid_args', 'path is required');
   // Resolve the PARENT (so links inside the path are resolved) but act on the entry itself:
   // removing a symlink/junction removes only the link, never its target.
   const abs = path.resolve(p);
   const target = path.join(await allowedPath(path.dirname(abs)), path.basename(abs));
   const x = norm(target);
-  if (!insideRoot(x)) throw new Error(`Path not allowed: ${p}. Must be strictly inside one of: ${ALLOWED.join(', ')}`);
+  if (!insideRoot(x)) fail('path_not_allowed', `Path not allowed: ${p}. Must be strictly inside one of: ${ALLOWED.join(', ')}`);
   if (ALLOWED.some((root) => { const r = norm(root); return r === x || r.startsWith(x + path.sep); })) {
-    throw new Error(`Refusing to remove an allowed root (or a directory containing one): ${p}`);
+    fail('path_not_allowed', `Refusing to remove an allowed root (or a directory containing one): ${p}`);
   }
   assertGuard(target, p, 'write');
-  if (holdsGuarded(x)) throw new Error(`Refusing to remove ${p}: it contains a protected or read-only folder.`);
+  if (holdsGuarded(x)) fail('read_only_path', `Refusing to remove ${p}: it contains a protected or read-only folder.`);
   let st;
-  try { st = await fs.lstat(target); } catch (e) { if (e.code === 'ENOENT') return text(`Not found: ${p}`, true); throw e; }
+  try { st = await fs.lstat(target); } catch (e) { if (e.code === 'ENOENT') fail('not_found', `Not found: ${p}`); throw e; }
   if (st.isSymbolicLink()) {
     try { await fs.unlink(target); } catch (e) { if (WIN && ['EPERM', 'EISDIR'].includes(e.code)) await fs.rmdir(target); else throw e; }
     return text(`Removed link ${p} (its target was not touched)`);
   }
   if (st.isDirectory()) {
     if (!recursive) {
-      try { await fs.rmdir(target); } catch (e) { if (['ENOTEMPTY', 'EEXIST'].includes(e.code)) return text(`Directory not empty: ${p}. Pass recursive=true to remove it with its contents.`, true); throw e; }
+      try { await fs.rmdir(target); } catch (e) { if (['ENOTEMPTY', 'EEXIST'].includes(e.code)) fail('not_empty', `Directory not empty: ${p}. Pass recursive=true to remove it with its contents.`); throw e; }
       return text(`Removed empty directory ${p}`);
     }
     await fs.rm(target, { recursive: true, force: false }); // lstat-based: links inside are unlinked, not followed
@@ -265,10 +322,11 @@ async function removePath(p, recursive) {
   return text(`Removed file ${p}`);
 }
 
-function sha256File(p) {
+function sha256File(p, signal) {
   return new Promise((resolve, reject) => {
     const h = createHash('sha256');
-    createReadStream(p).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', reject);
+    const rs = createReadStream(p).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', reject);
+    signal?.addEventListener('abort', () => rs.destroy(), { once: true }); // stop reading on call timeout
   });
 }
 
@@ -276,8 +334,8 @@ function sha256File(p) {
 // returned: other programs' arguments can contain passwords or tokens.
 async function listProcesses({ name, pid, limit = 50 }) {
   const max = Math.min(Math.max(1, Number(limit) || 50), 500);
-  if (pid !== undefined && !Number.isInteger(pid)) throw new ProtocolError(-32602, 'pid must be an integer');
-  if (name !== undefined && !/^[\w .+-]{1,100}$/.test(String(name))) throw new ProtocolError(-32602, 'name may contain only letters, digits, space, . _ + -');
+  if (pid !== undefined && !Number.isInteger(pid)) fail('invalid_args', 'pid must be an integer');
+  if (name !== undefined && !/^[\w .+-]{1,100}$/.test(String(name))) fail('invalid_args', 'name may contain only letters, digits, space, . _ + -');
   if (WIN) {
     const filter = pid !== undefined ? `-Filter "ProcessId=${pid}"` : name ? `-Filter "Name LIKE '%${name}%'"` : '';
     const script = `$ErrorActionPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;` +
@@ -312,7 +370,8 @@ async function listProcesses({ name, pid, limit = 50 }) {
 }
 
 // ------------------------------------------------------------ audit log --
-// One JSON line per tool call: time, tool, ok, duration and an error class.
+// One JSON line per tool call: time, boot/call ids, capability, class, ok,
+// duration, the PID for process operations, and the error code.
 // Never arguments or results (they can contain secrets or file contents).
 // Size-bounded: rotates at AUDIT_MAX bytes and keeps one old file (<= 2 x AUDIT_MAX).
 const AUDIT = process.env.MCPRELAY_AUDIT_LOG || '';
@@ -369,20 +428,20 @@ const str = { type: 'string' }; const num = { type: 'number' };
 const TOOLS = {
   node_status: { d: 'Status of this MCPRelay node runtime: version, PID, uptime, host, OS, allowed file roots and process-session counts. Contains no credentials.', s: P({}),
     run: async () => text(JSON.stringify({
-      server_version: VERSION, node_name: NODE_NAME, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
+      server_version: VERSION, node_name: NODE_NAME, boot_id: BOOT_ID, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
       hostname: hostname(), os: `${process.platform} ${release()}`, arch: arch(), node_version: process.version,
       allowed_dirs: ALLOWED, default_shell: SHELLS.default, shells: SHELLS.available,
       sessions: sessions.size, running_sessions: running(), audit_log: AUDIT || null, audit_max_bytes: AUDIT ? AUDIT_MAX : null,
     }, null, 2)) },
   list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']),
-    run: async (a) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10))).join('\n') || '(empty directory)') },
+    run: async (a, signal) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10), '', [], { deadline: Date.now() + LIST_BUDGET_MS, signal })).join('\n') || '(empty directory)') },
   read_file: { d: 'Read a UTF-8 text file by lines. offset >= 0: first line (0-based); offset < 0: the last |offset| lines (tail, e.g. -50 for logs). length: max lines (default 1000).', s: P({ path: str, offset: num, length: num }, ['path']),
     run: async (a) => {
       const p = await allowedPath(a.path); const st = await fs.stat(p);
-      if (st.isDirectory()) return text(`${a.path} is a directory; use list_directory`, true);
-      if (st.size > 64 * 1024 * 1024) return text(`File too large to read (${st.size} bytes)`, true);
+      if (st.isDirectory()) fail('is_a_directory', `${a.path} is a directory; use list_directory`);
+      if (st.size > 64 * 1024 * 1024) fail('too_large', `File too large to read (${st.size} bytes)`);
       const buf = await fs.readFile(p);
-      if (buf.subarray(0, 8000).includes(0)) return text(`Binary file (${buf.length} bytes) not shown: ${a.path}`, true);
+      if (buf.subarray(0, 8000).includes(0)) fail('binary_file', `Binary file (${buf.length} bytes) not shown: ${a.path}`);
       const lines = buf.toString('utf8').split(/\r?\n/);
       const len = Math.max(1, a.length ?? 1000);
       if ((a.offset ?? 0) < 0) {
@@ -395,7 +454,7 @@ const TOOLS = {
     } },
   write_file: { d: 'Write (mode=rewrite, default) or append (mode=append) UTF-8 text to a file; creates parent directories.', s: P({ path: str, content: str, mode: { type: 'string', enum: ['rewrite', 'append'] } }, ['path', 'content']),
     run: async (a) => {
-      if (typeof a.content !== 'string') throw new ProtocolError(-32602, 'content must be a string');
+      if (typeof a.content !== 'string') fail('invalid_args', 'content must be a string');
       const p = await allowedPath(a.path, 'write'); await fs.mkdir(path.dirname(p), { recursive: true });
       if (a.mode === 'append') await fs.appendFile(p, a.content, 'utf8');
       else { const tmp = `${p}.mcprelay-${process.pid}.tmp`; await fs.writeFile(tmp, a.content, 'utf8'); await fs.rename(tmp, p); } // atomic replace
@@ -405,7 +464,7 @@ const TOOLS = {
     run: async (a) => {
       const p = await allowedPath(a.file_path, 'write'); const src = await fs.readFile(p, 'utf8');
       const n = a.old_string ? src.split(a.old_string).length - 1 : 0; const want = a.expected_replacements ?? 1;
-      if (!a.old_string || n !== want) return text(`Found ${n} occurrence(s) of old_string, expected ${want}; no changes made.`, true);
+      if (!a.old_string || n !== want) fail('no_match', `Found ${n} occurrence(s) of old_string, expected ${want}; no changes made.`);
       const tmp = `${p}.mcprelay-${process.pid}.tmp`; await fs.writeFile(tmp, src.split(a.old_string).join(a.new_string), 'utf8'); await fs.rename(tmp, p);
       return text(`Replaced ${n} occurrence(s) in ${a.file_path}`);
     } },
@@ -414,32 +473,35 @@ const TOOLS = {
   move_file: { d: 'Move or rename a file or directory.', s: P({ source: str, destination: str }, ['source', 'destination']),
     run: async (a) => {
       const src = await allowedPath(a.source, 'write');
-      if (holdsGuarded(norm(src))) throw new Error(`Refusing to move ${a.source}: it contains a protected or read-only folder.`);
+      if (holdsGuarded(norm(src))) fail('read_only_path', `Refusing to move ${a.source}: it contains a protected or read-only folder.`);
       await fs.rename(src, await allowedPath(a.destination, 'write')); return text(`Moved ${a.source} -> ${a.destination}`); } },
   remove_path: { d: 'Delete a file, an empty directory, or (recursive=true) a directory with its contents. Only inside the allowed roots; never an allowed root itself. Links are removed without touching their targets.', s: P({ path: str, recursive: { type: 'boolean' } }, ['path']),
     run: async (a) => removePath(a.path, a.recursive === true) },
   get_file_info: { d: 'File or directory metadata; sha256=true adds the file\'s SHA-256.', s: P({ path: str, sha256: { type: 'boolean' } }, ['path']),
-    run: async (a) => { const p = await allowedPath(a.path); const st = await fs.stat(p);
+    run: async (a, signal) => { const p = await allowedPath(a.path); const st = await fs.stat(p);
       const info = { size: st.size, type: st.isDirectory() ? 'directory' : 'file', modified: st.mtime, created: st.birthtime };
-      if (a.sha256 === true && !st.isDirectory()) info.sha256 = await sha256File(p);
+      if (a.sha256 === true && !st.isDirectory()) info.sha256 = await sha256File(p, signal);
       return text(JSON.stringify(info, null, 2)); } },
-  search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links are not followed.', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']),
-    run: async (a) => { const hits = await searchFiles(await allowedPath(a.path), a.pattern, a.content_pattern, Math.min(a.max_results ?? 100, 1000)); return text(hits.join('\n') || 'No matches.'); } },
-  start_process: { d: 'Run a shell command in the default shell (see the environment; on Windows PowerShell 7 when installed) or in args.shell (e.g. "powershell.exe" for Windows PowerShell 5.1, "cmd.exe"). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running and are addressed by PID.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
+  search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links, node_modules and .git are skipped. Stops after 60 s or 200000 entries and then returns partial results marked [partial: ...].', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']),
+    run: async (a, signal) => {
+      const { hits, visited, stopped } = await searchFiles(await allowedPath(a.path), a.pattern, a.content_pattern, Math.min(a.max_results ?? 100, 1000), signal);
+      const note = stopped ? `\n[partial: search stopped at the ${stopped} after ${visited} entries; narrow path or pattern for complete results]` : '';
+      return text((hits.join('\n') || 'No matches.') + note); } },
+  start_process: { d: 'Run a shell command in the default shell (see the environment; on Windows PowerShell 7 when installed) or in args.shell (e.g. "powershell.exe" for Windows PowerShell 5.1, "cmd.exe"). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running; the result gives a PID and a handle, and read_process_output / interact_with_process / force_terminate need that handle.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
     run: startProcess },
-  read_process_output: { d: 'Read new output of a process started with start_process (waits up to timeout_ms for new output).', s: P({ pid: num, timeout_ms: num }, ['pid']),
-    run: async (a) => { const s = sessions.get(a.pid); if (!s) return text(`No session found for PID ${a.pid}`, true);
+  read_process_output: { d: 'Read new output of a process started with start_process, identified by the handle start_process returned (waits up to timeout_ms for new output).', s: P({ handle: str, timeout_ms: num }, ['handle']),
+    run: async (a) => { const [pid, s] = sessionOf(a.handle);
       await waitQuiet(s, Math.min(a.timeout_ms ?? 5000, 60_000)); const out = takeOutput(s);
-      return text(`${out || '(no new output)'}${s.exitCode === null ? '' : `\nProcess finished with exit code ${s.exitCode}.`}`); } },
-  interact_with_process: { d: 'Send a line of input to a running process and return the output it produces.', s: P({ pid: num, input: str, timeout_ms: num }, ['pid', 'input']),
-    run: async (a) => { const s = sessions.get(a.pid); if (!s || s.exitCode !== null) return text(`No active session found for PID ${a.pid}`, true);
+      return { ...text(`${out || '(no new output)'}${s.exitCode === null ? '' : `\nProcess finished with exit code ${s.exitCode}.`}`), auditPid: pid }; } },
+  interact_with_process: { d: 'Send a line of input to a running process (identified by its start_process handle) and return the output it produces.', s: P({ handle: str, input: str, timeout_ms: num }, ['handle', 'input']),
+    run: async (a) => { const [pid, s] = sessionOf(a.handle, { active: true });
       takeOutput(s); s.child.stdin.write(String(a.input).endsWith('\n') ? String(a.input) : `${a.input}\n`);
-      await waitQuiet(s, Math.min(a.timeout_ms ?? 8000, 60_000)); return text(takeOutput(s) || '(no output)'); } },
-  force_terminate: { d: 'Terminate a process started with start_process, including its child processes.', s: P({ pid: num }, ['pid']),
-    run: async (a) => { const s = sessions.get(a.pid); if (!s || s.exitCode !== null) return text(`No active session found for PID ${a.pid}`, true);
-      await killTree(a.pid); return text(`Terminated process ${a.pid}`); } },
-  list_sessions: { d: 'List processes started with start_process.', s: P({}),
-    run: async () => text([...sessions.entries()].map(([pid, s]) => `PID: ${pid}, ${s.exitCode === null ? 'running' : `exited (${s.exitCode})`}, runtime: ${Math.round((Date.now() - s.started) / 1000)}s`).join('\n') || 'No sessions.') },
+      await waitQuiet(s, Math.min(a.timeout_ms ?? 8000, 60_000)); return { ...text(takeOutput(s) || '(no output)'), auditPid: pid }; } },
+  force_terminate: { d: 'Terminate a process started with start_process (identified by its handle), including its child processes.', s: P({ handle: str }, ['handle']),
+    run: async (a) => { const [pid] = sessionOf(a.handle, { active: true });
+      await killTree(pid); return { ...text(`Terminated process ${pid}`), auditPid: pid }; } },
+  list_sessions: { d: 'List processes started with start_process (PID, state, shell, runtime). Handles are not shown: only the caller that started a process holds its handle.', s: P({}),
+    run: async () => text([...sessions.entries()].map(([pid, s]) => `PID: ${pid}, ${s.exitCode === null ? 'running' : `exited (${s.exitCode})`}, shell: ${s.shell}, runtime: ${Math.round((Date.now() - s.started) / 1000)}s`).join('\n') || 'No sessions.') },
   list_processes: { d: 'List system processes (read-only), largest memory first: pid, parent_pid, name, path, start_time, cpu_time (s), rss (bytes). Filter by name (substring) or pid; limit (default 50, max 500). Command lines are not returned.', s: P({ name: str, pid: num, limit: num }),
     run: async (a) => { const rows = await listProcesses(a); return text(rows.length ? JSON.stringify(rows, null, 1) : 'No matching processes.'); } },
 };
@@ -482,20 +544,26 @@ const META = {
 const invokeTool = (cls) => `invoke_${cls}`;
 const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
 
+const allCaps = () => Object.entries(TOOLS).map(([name, t]) => ({
+  name, class: META[name][1], invoke_with: invokeTool(META[name][1]), title: META[name][0], description: t.d, args_schema: t.s,
+}));
 function catalog(onlyClass) {
-  const caps = Object.entries(TOOLS).filter(([n]) => !onlyClass || META[n][1] === onlyClass).map(([name, t]) => ({
-    name, class: META[name][1], invoke_with: invokeTool(META[name][1]), title: META[name][0], description: t.d, args_schema: t.s,
-  }));
+  const all = allCaps();
   return {
     node: NODE_NAME, server_version: VERSION,
-    catalog_version: createHash('sha256').update(JSON.stringify(caps)).digest('hex').slice(0, 12),
-    environment: { os: OS_DESC, file_roots: ALLOWED, protected_paths: PROTECTED, read_only_paths: READ_ONLY.concat(WIN ? ['<drive>:\$Recycle.Bin, System Volume Information, Recovery, Config.Msi, *.sys page/hibernate files'] : []),
+    // Hash of the complete catalog (capabilities, classes, schemas), the same
+    // for every filtered view; clients may cache the catalog until it changes.
+    catalog_version: createHash('sha256').update(JSON.stringify(all)).digest('hex').slice(0, 12),
+    view: onlyClass || 'all',
+    environment: { os: OS_DESC, file_roots: ALLOWED, protected_paths: PROTECTED, read_only_paths: READ_ONLY.concat(WIN ? ['<drive>:\\$Recycle.Bin, System Volume Information, Recovery, Config.Msi, *.sys page/hibernate files'] : []),
       default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
       notes: ['File capabilities only work inside file_roots, never touch protected_paths, and only read read_only_paths. This is a guardrail against mistakes, not a security boundary.',
         "Shell commands run with the user's full rights and are not limited by these lists."] },
     usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older.',
     classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
-    capabilities: caps,
+    errors: { format: 'Error [<code>]: <message> (next: <action>); also in result _meta["io.mcprelay/error"] = {code, action}',
+      actions: { fix_args: NEXT.fix_args, ask_user: NEXT.ask_user, retry_later: NEXT.retry_later, stop: NEXT.stop }, codes: ERRORS },
+    capabilities: onlyClass ? all.filter((c) => c.class === onlyClass) : all,
   };
 }
 
@@ -539,49 +607,58 @@ const EXPOSED = () => [
 async function invoke(cls, params, done) {
   const name = params.capability;
   if (typeof name !== 'string' || !Object.hasOwn(TOOLS, name)) {
-    done(typeof name === 'string' ? name.slice(0, 64) : '?', cls, false, 'unknown_capability');
-    return text(`Unknown capability "${name}". Capabilities of class "${cls}": ${namesOf(cls).join(', ')}. Call list_capabilities for the full current list.`, true);
+    done({ tool: typeof name === 'string' ? name.slice(0, 64) : '?', cls, err: 'unknown_capability' });
+    return errorResult('unknown_capability', `Unknown capability "${name}". Capabilities of class "${cls}": ${namesOf(cls).join(', ')}. Call list_capabilities for the full current list.`);
   }
   const own = META[name][1];
   if (own !== cls) {
-    done(name, cls, false, 'wrong_class');
-    return text(`"${name}" is a "${own}" capability; call ${invokeTool(own)} instead. Nothing was run.`, true);
+    done({ tool: name, cls, err: 'wrong_class' });
+    return errorResult('wrong_class', `"${name}" is a "${own}" capability; call ${invokeTool(own)} instead. Nothing was run.`);
   }
   const { args, error } = checkArgs(TOOLS[name].s, params.args);
   if (error) {
-    done(name, cls, false, 'invalid_args');
-    return text(`Invalid args for ${name}: ${error}. args_schema: ${JSON.stringify(TOOLS[name].s)}`, true);
+    done({ tool: name, cls, err: 'invalid_args' });
+    return errorResult('invalid_args', `Invalid args for ${name}: ${error}. args_schema: ${JSON.stringify(TOOLS[name].s)}`);
   }
+  const ac = new AbortController();
   try {
-    const result = await withTimeout(TOOLS[name].run(args), CALL_TIMEOUT_MS, name);
-    done(name, cls, !result.isError, result.isError ? 'tool_error' : undefined);
+    const { auditPid, ...result } = await withTimeout(TOOLS[name].run(args, ac.signal), CALL_TIMEOUT_MS, name, ac);
+    done({ tool: name, cls, pid: auditPid });
     return result;
   } catch (e) {
-    const err = e instanceof ProtocolError ? 'invalid_args' : /timed out after/.test(e.message) ? 'timeout' : 'exception';
-    done(name, cls, false, err);
-    return text(`Error: ${e.message}`, true);
+    const code = codeOf(e);
+    if (code === 'internal_error') log(`${name} failed:`, e?.stack || e);
+    done({ tool: name, cls, err: code });
+    return errorResult(code, e.message);
   }
 }
+
+// Non-sensitive correlation ids: boot_id per server process, call_id per call
+// (also returned in the result's _meta so a client can match audit lines).
+const BOOT_ID = randomBytes(4).toString('hex');
 
 function mcpServer() {
   const server = new Server({ name: 'mcprelay-node', version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler('tools/list', async () => ({ tools: EXPOSED() }));
   server.setRequestHandler('tools/call', async (req) => {
     const tool = req.params.name; const params = req.params.arguments || {}; const started = Date.now();
-    const done = (name, cls, ok, err) => audit({ t: new Date(started).toISOString(), tool: name, ...(cls ? { cls } : {}), ok, ms: Date.now() - started, ...(err ? { err } : {}) });
+    const callId = randomBytes(4).toString('hex');
+    const done = ({ tool: name, cls, err, pid }) => audit({ t: new Date(started).toISOString(), boot: BOOT_ID, call: callId, tool: name,
+      ...(cls ? { cls } : {}), ok: !err, ms: Date.now() - started, ...(pid ? { pid } : {}), ...(err ? { err } : {}) });
+    const tag = (r) => ({ ...r, _meta: { ...(r._meta || {}), 'io.mcprelay/call_id': `${BOOT_ID}-${callId}` } });
     if (tool === 'list_capabilities') {
       if (params.class !== undefined && !Object.hasOwn(CLASSES, params.class)) {
-        done(tool, null, false, 'invalid_args'); return text(`class must be one of: ${Object.keys(CLASSES).join(', ')}`, true);
+        done({ tool, err: 'invalid_args' }); return tag(errorResult('invalid_args', `class must be one of: ${Object.keys(CLASSES).join(', ')}`));
       }
-      done(tool, null, true);
-      return text(JSON.stringify(catalog(params.class), null, 1));
+      done({ tool });
+      return tag(text(JSON.stringify(catalog(params.class), null, 1)));
     }
     const cls = typeof tool === 'string' && tool.startsWith('invoke_') ? tool.slice(7) : null;
     if (!cls || !Object.hasOwn(CLASSES, cls)) {
-      done(String(tool).slice(0, 64), null, false, 'unknown_tool');
+      done({ tool: String(tool).slice(0, 64), err: 'unknown_tool' });
       throw new ProtocolError(-32602, `Unknown tool: ${tool}. Tools: list_capabilities, ${Object.keys(CLASSES).map(invokeTool).join(', ')}`);
     }
-    return invoke(cls, params, done);
+    return tag(await invoke(cls, params, done));
   });
   return server;
 }

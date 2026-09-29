@@ -4,7 +4,7 @@
 
 MCPRelay is a private/self-hosted remote-MCP access system. It exposes the local capabilities of computers we own safely and simply to remote MCP clients.
 
-Originally it transported Desktop Commander's tools. Since ADR-0004 it ships its own minimal capability server with DC-compatible tool names.
+Originally it transported Desktop Commander's tools. Since ADR-0004 it ships its own minimal capability server with DC-compatible capability names. Since ADR-0007 clients see a fixed set of risk-class tools (`list_capabilities` + `invoke_<class>`), and the capabilities are described by the catalog.
 
 ## 2. Functional requirements
 

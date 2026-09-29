@@ -79,7 +79,7 @@ Operate the app from the tray icon: green = connected, yellow = starting/connect
 - Closing the window hides it to the tray; **Quit** stops the capability server and the tunnel.
 - Logs (all size-capped, the oldest part is dropped):
   - `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log` — app, server and tunnel events; rotates at 2 MB into `.1` (≤ 4 MB).
-  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, tool name, ok, duration, error class. No arguments, paths, commands or output. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 13,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
+  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, `boot` (server process) and `call` ids, capability, class, ok, duration, `pid` for process operations, and the error code. No arguments, paths, commands or output. A client sees the same ids in the result's `_meta["io.mcprelay/call_id"]`. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 9,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
   - VPS: journald only, capped by `vps-install.sh` at 200 MB / 7 days.
 - File capabilities work only inside the roots, `allowedDirs` in `%APPDATA%\MCPRelay\config.json`. The default is the user profile; the Owner's node uses `"%USERPROFILE%;D:\\"`. Restart services after changing it. The installer keeps these settings.
 - Two guard lists apply inside the roots (list them with `list_capabilities`):
