@@ -392,6 +392,67 @@ await check('unknown capability and invalid args are explained', async () => {
   expect(!co.isError && /line2-edited/.test(co.text), brief(co.text));
 });
 
+// --- guard lists: protected (never read/changed) and read-only paths inside the roots ---
+// Only test folders named mcprelay-guard* (set via MCPRELAY_PROTECTED_DIRS /
+// MCPRELAY_READONLY_DIRS, as CI does), never real ones such as ~/.ssh.
+const lc = (s) => (opt.os === 'windows' ? s.toLowerCase() : s);
+const insideRoots = (p) => status.allowed_dirs.some((r) => lc(p).startsWith(lc(r.endsWith(sep) ? r : r + sep)));
+
+await check('protected paths are neither read, listed, searched nor changed', async () => {
+  const env = (await catalog(b)).environment;
+  const ssh = await call(b, 'read_file', { path: `${env.working_directory}${sep}.ssh${sep}id_probe` });
+  expect(ssh.isError && /(Protected path|not allowed)/.test(ssh.text), `~/.ssh style path readable? ${brief(ssh.text)}`);
+  const prot = env.protected_paths.find((p) => insideRoots(p) && /mcprelay-guard/.test(p));
+  if (!prot) return 'no mcprelay-guard protected test folder configured (skipped)';
+  const parent = prot.slice(0, prot.lastIndexOf(sep));
+  const secret = `${prot}${sep}mcprelay-guard-probe.txt`;
+  await run(opt.os === 'windows'
+    ? `New-Item -ItemType Directory -Force '${prot}' | Out-Null; if (-not (Test-Path '${secret}')) { Set-Content -Path '${secret}' -Value guard-secret-xyz }`
+    : `mkdir -p '${prot}' && [ -e '${secret}' ] || echo guard-secret-xyz > '${secret}'`);
+  const rd = await call(b, 'read_file', { path: secret });
+  expect(rd.isError && /Protected path/.test(rd.text), `read: ${brief(rd.text)}`);
+  const wr = await call(b, 'write_file', { path: secret, content: 'x' });
+  expect(wr.isError && /Protected path/.test(wr.text), `write: ${brief(wr.text)}`);
+  const ls = await call(b, 'list_directory', { path: prot });
+  expect(ls.isError && /Protected path/.test(ls.text), `list: ${brief(ls.text)}`);
+  const up = await call(b, 'list_directory', { path: parent, depth: 2 });
+  expect(!up.isError && /\(protected, not listed\)/.test(up.text) && !up.text.includes('mcprelay-guard-probe'), `parent listing: ${brief(up.text)}`);
+  const se = await call(b, 'search_files', { path: parent, pattern: 'mcprelay-guard-probe*', max_results: 5 });
+  expect(!se.text.includes('mcprelay-guard-probe'), `search found protected file: ${brief(se.text)}`);
+  const rm = await call(b, 'remove_path', { path: secret });
+  expect(rm.isError && /Protected path/.test(rm.text), `remove: ${brief(rm.text)}`);
+  await run(opt.os === 'windows' ? `Remove-Item -Force '${secret}'` : `rm -f '${secret}'`);
+  return prot;
+});
+
+await check('read-only paths are readable but never changed', async () => {
+  const env = (await catalog(b)).environment;
+  const ro = env.read_only_paths.find((p) => insideRoots(p) && /mcprelay-guard/.test(p));
+  if (!ro) return 'no mcprelay-guard read-only test folder configured (skipped)';
+  const f = `${ro}${sep}mcprelay-ro-probe.txt`;
+  await run(opt.os === 'windows'
+    ? `New-Item -ItemType Directory -Force '${ro}' | Out-Null; Set-Content -Path '${f}' -Value ro-ok`
+    : `mkdir -p '${ro}' && echo ro-ok > '${f}'`);
+  const rd = await call(b, 'read_file', { path: f });
+  expect(!rd.isError && rd.text.includes('ro-ok'), `read: ${brief(rd.text)}`);
+  for (const [cap, args] of [['write_file', { path: f, content: 'x' }], ['edit_block', { file_path: f, old_string: 'ro-ok', new_string: 'x' }],
+    ['create_directory', { path: `${ro}${sep}sub` }], ['remove_path', { path: f }], ['move_file', { source: f, destination: `${opt.fixture}${sep}moved.txt` }]]) {
+    const r = await call(b, cap, args);
+    expect(r.isError && /Read-only path/.test(r.text), `${cap}: ${brief(r.text)}`);
+  }
+  expect((await call(b, 'read_file', { path: f })).text.includes('ro-ok'), 'read-only file changed!');
+  // A folder holding a guarded folder can be neither removed nor moved.
+  const parent = ro.slice(0, ro.lastIndexOf(sep));
+  if (insideRoots(parent)) {
+    const rm = await call(b, 'remove_path', { path: parent, recursive: true });
+    expect(rm.isError && /(contains a protected or read-only|allowed root)/.test(rm.text), `remove parent: ${brief(rm.text)}`);
+    const mv = await call(b, 'move_file', { source: parent, destination: `${parent}-moved` });
+    expect(mv.isError && /(contains a protected or read-only|Read-only path|not allowed)/.test(mv.text), `move parent: ${brief(mv.text)}`);
+  }
+  await run(opt.os === 'windows' ? `Remove-Item -Force '${f}'` : `rm -f '${f}'`);
+  return ro;
+});
+
 await check('default shell is the one the catalog advertises', async () => {
   const c = await catalog(b);
   const r = await call(b, 'start_process', { command: 'echo shell-ok', timeout_ms: 20000 });

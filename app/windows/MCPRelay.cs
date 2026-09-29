@@ -28,7 +28,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("MCPRelay")]
 [assembly: System.Reflection.AssemblyProduct("MCPRelay")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0")]
 
 namespace MCPRelay
 {
@@ -75,6 +75,8 @@ namespace MCPRelay
         public string BridgeScript = "";   // optional override (development)
         public string NodeExe = "";        // optional override (development)
         public string AllowedDirs = "";    // file-tool roots, ';'-separated (default: user profile)
+        public string ProtectedDirs = "";  // extra never-read/never-change folders for file tools
+        public string ReadOnlyDirs = "";   // extra read-only folders for file tools
 
         public static string Dir { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MCPRelay"); } }
         public static string FilePath { get { return Path.Combine(Dir, "config.json"); } }
@@ -101,6 +103,8 @@ namespace MCPRelay
                 c.BridgeScript = Environment.ExpandEnvironmentVariables(s("bridgeScript"));
                 c.NodeExe = Environment.ExpandEnvironmentVariables(s("nodeExe"));
                 c.AllowedDirs = Environment.ExpandEnvironmentVariables(s("allowedDirs"));
+                c.ProtectedDirs = Environment.ExpandEnvironmentVariables(s("protectedDirs"));
+                c.ReadOnlyDirs = Environment.ExpandEnvironmentVariables(s("readOnlyDirs"));
             }
             catch (Exception e) { error = "Invalid config.json: " + e.Message; return c; }
             if (c.VpsHost == "" || c.RemotePort <= 0) error = "config.json needs vpsHost and remotePort";
@@ -444,6 +448,8 @@ namespace MCPRelay
                 psi.WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 psi.EnvironmentVariables["MCPRELAY_BRIDGE_TOKEN"] = File.ReadAllText(Config.TokenPath).Trim();
                 if (config.AllowedDirs != "") psi.EnvironmentVariables["MCPRELAY_ALLOWED_DIRS"] = config.AllowedDirs;
+                if (config.ProtectedDirs != "") psi.EnvironmentVariables["MCPRELAY_PROTECTED_DIRS"] = config.ProtectedDirs;
+                if (config.ReadOnlyDirs != "") psi.EnvironmentVariables["MCPRELAY_READONLY_DIRS"] = config.ReadOnlyDirs;
                 psi.EnvironmentVariables["MCPRELAY_NODE_NAME"] = config.NodeName;
                 // Per-call audit trail (no arguments), size-capped by the server (~2 MB).
                 psi.EnvironmentVariables["MCPRELAY_AUDIT_LOG"] = Path.Combine(logDir, "audit.log");

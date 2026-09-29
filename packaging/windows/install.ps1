@@ -70,7 +70,15 @@ $config = [ordered]@{
   knownHosts = '%APPDATA%\MCPRelay\known_hosts'
   publicUrl  = $PublicUrl
 }
-$config | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $cfgDir 'config.json')
+# Keep Owner settings from an existing config (allowedDirs, protectedDirs, readOnlyDirs, ...).
+$cfgFile = Join-Path $cfgDir 'config.json'
+if (Test-Path $cfgFile) {
+  try {
+    $old = Get-Content -Raw $cfgFile | ConvertFrom-Json
+    foreach ($p in $old.PSObject.Properties) { if (-not $config.Contains($p.Name)) { $config[$p.Name] = $p.Value } }
+  } catch { Write-Warning "existing config.json is unreadable; writing a new one" }
+}
+$config | ConvertTo-Json | Set-Content -Encoding UTF8 $cfgFile
 
 Write-Host "== Start Menu shortcut"
 $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'MCPRelay.lnk'

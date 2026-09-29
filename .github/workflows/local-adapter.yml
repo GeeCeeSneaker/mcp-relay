@@ -42,6 +42,9 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then export MCPRELAY_AUDIT_LOG="$(cygpath -w "$HOME")\\mcprelay-audit\\audit.log"
           else export MCPRELAY_AUDIT_LOG="$HOME/mcprelay-audit/audit.log"; fi
           export MCPRELAY_AUDIT_MAX_BYTES=16384 MCPRELAY_NODE_NAME=ci
+          # Extra guard folders inside the root, so the smoke suite exercises both guard lists.
+          if [ "$RUNNER_OS" = "Windows" ]; then g="$(cygpath -w "$HOME")\\mcprelay-guard"; export MCPRELAY_PROTECTED_DIRS="$g\\prot" MCPRELAY_READONLY_DIRS="$g\\ro"
+          else g="$HOME/mcprelay-guard"; export MCPRELAY_PROTECTED_DIRS="$g/prot" MCPRELAY_READONLY_DIRS="$g/ro"; fi
           node node-runtime/server.mjs --port 18001 > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:18001/healthz && exit 0
