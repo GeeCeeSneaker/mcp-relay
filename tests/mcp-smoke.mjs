@@ -8,10 +8,14 @@
 //     [--os windows|linux]     node OS (selects the long-running test command)
 //     [--era legacy|modern]    protocol generation: 2025-era handshake (SDK v1
 //                              client) or sessionless 2026-07-28 (SDK v2 client)
+//     [--destructive-ok]       also check that remove_path refuses the allowed
+//                              root itself (only against throwaway/scratch roots:
+//                              a broken server would delete that root)
 //
 // Exit code 0 only if every check passes.
 
 import { parseArgs } from 'node:util';
+import { createHash } from 'node:crypto';
 
 const { values: opt } = parseArgs({
   options: {
@@ -21,6 +25,7 @@ const { values: opt } = parseArgs({
     'token-env': { type: 'string' },
     os: { type: 'string', default: process.platform === 'win32' ? 'windows' : 'linux' },
     era: { type: 'string', default: 'legacy' },
+    'destructive-ok': { type: 'boolean', default: false },
   },
 });
 const MODERN = '2026-07-28';
@@ -45,8 +50,9 @@ const LONG_RUNNING = opt.os === 'windows'
   : { shell: '/bin/sh', command: 'i=1; while [ $i -le 90 ]; do echo tick $i; i=$((i+1)); sleep 1; done' };
 
 const REQUIRED_TOOLS = [
-  'list_directory', 'read_file', 'write_file', 'edit_block', 'create_directory',
-  'start_process', 'read_process_output', 'interact_with_process', 'force_terminate',
+  'node_status', 'list_directory', 'read_file', 'write_file', 'edit_block', 'create_directory', 'move_file',
+  'remove_path', 'get_file_info', 'search_files',
+  'start_process', 'read_process_output', 'interact_with_process', 'force_terminate', 'list_sessions', 'list_processes',
 ];
 
 let failures = 0;
@@ -224,6 +230,107 @@ await check('terminate process from second connection', async () => {
   const r = await call(b, 'force_terminate', { pid });
   expect(!r.isError && !/No (active )?session found/i.test(r.text), brief(r.text));
 });
+
+// --- v1.1 tools: node_status, read_file tail, sha256, list_processes, remove_path ---
+const J = (r) => { try { return JSON.parse(r.text); } catch { throw new Error(`not JSON: ${brief(r.text)}`); } };
+const shellOf = opt.os === 'windows' ? { shell: 'powershell.exe' } : { shell: '/bin/sh' };
+const run = (command) => call(b, 'start_process', { command, timeout_ms: 20000, ...shellOf });
+let status;
+
+await check('node_status reports runtime facts and no credentials', async () => {
+  const r = await call(b, 'node_status', {});
+  status = J(r);
+  for (const k of ['server_version', 'pid', 'uptime_seconds', 'hostname', 'os', 'arch', 'allowed_dirs', 'sessions', 'running_sessions']) expect(k in status, `missing ${k}`);
+  expect(Number.isInteger(status.pid) && Array.isArray(status.allowed_dirs) && status.allowed_dirs.length > 0, brief(r.text));
+  const token = opt['token-env'] ? process.env[opt['token-env']] : '';
+  expect(!token || !r.text.includes(token), 'bearer token leaked');
+  expect(!/authorization|bearer|password|secret|MCPRELAY_BRIDGE_TOKEN/i.test(r.text), 'credential-like text present');
+  return `v${status.server_version}, pid ${status.pid}`;
+});
+
+await check('read_file offset<0 returns exactly the last N lines', async () => {
+  const f = `${opt.fixture}${sep}hundred.txt`;
+  await call(b, 'write_file', { path: f, content: Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n') + '\n' });
+  const t = await call(b, 'read_file', { path: f, offset: -10 });
+  const body = t.text.split('\n\n').slice(1).join('\n\n').split('\n');
+  expect(body.length === 10 && body[0] === 'line 91' && body[9] === 'line 100', brief(t.text));
+  const h = await call(b, 'read_file', { path: f, offset: 5, length: 2 });
+  expect(/line 6\nline 7$/.test(h.text.trim()), `positive offset changed: ${brief(h.text)}`);
+});
+
+await check('get_file_info sha256 matches a reference hash', async () => {
+  const f = `${opt.fixture}${sep}hash.txt`; const content = 'mcprelay sha256 check\n中文\n';
+  await call(b, 'write_file', { path: f, content });
+  const info = J(await call(b, 'get_file_info', { path: f, sha256: true }));
+  const want = createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex');
+  expect(info.sha256 === want, `${info.sha256} != ${want}`);
+});
+
+await check('list_processes: all, by pid, by name, limit', async () => {
+  const all = J(await call(b, 'list_processes', { limit: 20 }));
+  expect(Array.isArray(all) && all.length > 1 && all.length <= 20, `all: ${all.length}`);
+  const byPid = J(await call(b, 'list_processes', { pid: status.pid }));
+  expect(byPid.length === 1 && byPid[0].pid === status.pid && byPid[0].name && byPid[0].rss > 0, JSON.stringify(byPid).slice(0, 200));
+  const byName = J(await call(b, 'list_processes', { name: 'node', limit: 200 }));
+  expect(byName.some((p) => p.pid === status.pid), 'server pid not found by name "node"');
+  const lim = J(await call(b, 'list_processes', { limit: 3 }));
+  expect(lim.length === 3, `limit 3 returned ${lim.length}`);
+  expect(!all.some((p) => 'command_line' in p || 'cmdline' in p), 'command lines must not be returned');
+  return `${all.length} rows`;
+});
+
+await check('remove_path: file, empty dir, non-empty dir (non-recursive fails, recursive ok)', async () => {
+  const d = `${opt.fixture}${sep}rmtest`;
+  await call(b, 'create_directory', { path: `${d}${sep}sub` });
+  await call(b, 'write_file', { path: `${d}${sep}sub${sep}f.txt`, content: 'x' });
+  await call(b, 'write_file', { path: `${d}${sep}single.txt`, content: 'x' });
+  expect(!(await call(b, 'remove_path', { path: `${d}${sep}single.txt` })).isError, 'file');
+  await call(b, 'create_directory', { path: `${d}${sep}empty` });
+  expect(!(await call(b, 'remove_path', { path: `${d}${sep}empty` })).isError, 'empty dir');
+  const nr = await call(b, 'remove_path', { path: `${d}${sep}sub` });
+  expect(nr.isError && /not empty/i.test(nr.text), `non-recursive: ${brief(nr.text)}`);
+  expect(!(await call(b, 'remove_path', { path: d, recursive: true })).isError, 'recursive');
+  const gone = await call(b, 'get_file_info', { path: d });
+  expect(gone.isError, 'directory still exists');
+});
+
+await check('remove_path refuses paths outside the allowed roots', async () => {
+  const outside = opt.os === 'windows' ? 'C:\\Windows\\win.ini' : '/etc/hostname';
+  const r = await call(b, 'remove_path', { path: outside });
+  expect(r.isError && /not allowed/i.test(r.text), brief(r.text));
+});
+
+await check('remove_path removes a link, never its target; recursive delete does not follow links', async () => {
+  const outsideDir = opt.os === 'windows' ? 'C:\\Users\\Public\\mcprelay-sentinel' : '/tmp/mcprelay-sentinel';
+  const keep = `${outsideDir}${sep}keep.txt`;
+  const l1 = `${opt.fixture}${sep}link-only`; const d = `${opt.fixture}${sep}withlink`; const l2 = `${d}${sep}inner-link`;
+  if (opt.os === 'windows') {
+    await run(`New-Item -ItemType Directory -Force '${outsideDir}' | Out-Null; Set-Content -Path '${keep}' -Value keep`);
+    await call(b, 'create_directory', { path: d });
+    await run(`cmd /c mklink /J "${l1}" "${outsideDir}"; cmd /c mklink /J "${l2}" "${outsideDir}"`);
+  } else {
+    await run(`mkdir -p '${outsideDir}' && echo keep > '${keep}'`);
+    await call(b, 'create_directory', { path: d });
+    await run(`ln -sfn '${outsideDir}' '${l1}' && ln -sfn '${outsideDir}' '${l2}'`);
+  }
+  const r1 = await call(b, 'remove_path', { path: l1 });
+  expect(!r1.isError && /link/i.test(r1.text), `link: ${brief(r1.text)}`);
+  const r2 = await call(b, 'remove_path', { path: d, recursive: true });
+  expect(!r2.isError, `recursive: ${brief(r2.text)}`);
+  const still = await run(opt.os === 'windows' ? `Test-Path '${keep}'` : `test -f '${keep}' && echo True || echo False`);
+  expect(/True/.test(still.text), `target content was deleted! ${brief(still.text)}`);
+  await run(opt.os === 'windows' ? `Remove-Item -Recurse -Force '${outsideDir}'` : `rm -rf '${outsideDir}'`);
+});
+
+if (opt['destructive-ok']) {
+  await check('remove_path refuses the allowed root itself (scratch roots only)', async () => {
+    const root = status.allowed_dirs[0];
+    const r = await call(b, 'remove_path', { path: root, recursive: true });
+    expect(r.isError && /allowed root|not allowed/i.test(r.text), brief(r.text));
+    const still = await call(b, 'get_file_info', { path: root });
+    expect(!still.isError, 'allowed root is gone!');
+  });
+}
 
 await b?.close();
 

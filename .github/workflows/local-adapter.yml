@@ -53,7 +53,7 @@ jobs:
           fi
           for era in legacy modern; do
             echo "== protocol era: $era"
-            node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
+            node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era" --destructive-ok
           done
       - name: Extended checks (Windows)
         if: runner.os == 'Windows'
