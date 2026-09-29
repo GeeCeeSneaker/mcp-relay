@@ -1,6 +1,6 @@
 # WO-0002 — P2 Reliability and Reproducibility
 
-- Status: `IN_PROGRESS` (T1-T6 pass; T7-T9 pending Owner)
+- Status: `IN_PROGRESS` (T1-T6 pass; T8 power cycle pass 2026-09-29; chaos/soak pass (ADR-0006); deliberate T7 outage and T9 sleep/resume pending Owner)
 - Dependency: WO-0001 generic E2E path works
 
 ## Objective
