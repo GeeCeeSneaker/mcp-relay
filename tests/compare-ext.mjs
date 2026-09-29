@@ -10,8 +10,11 @@ const { values: opt } = parseArgs({ options: { url: { type: 'string' }, 'token-e
 const headers = opt['token-env'] ? { Authorization: `Bearer ${process.env[opt['token-env']]}` } : {};
 const c = new Client({ name: 'compare-ext', version: '0' }, { versionNegotiation: { mode: { pin: '2026-07-28' } } });
 await c.connect(new StreamableHTTPClientTransport(new URL(opt.url), { requestInit: { headers } }));
+// Capabilities go through the invoke_<class> tool named in the node's catalog.
+const cat = await c.callTool({ name: `${opt.prefix}list_capabilities`, arguments: {} });
+const via = new Map(JSON.parse(cat.content[0].text).capabilities.map((x) => [x.name, x.invoke_with]));
 const call = async (name, args) => {
-  const r = await c.callTool({ name: opt.prefix + name, arguments: args }, undefined, { timeout: 120000 });
+  const r = await c.callTool({ name: opt.prefix + via.get(name), arguments: { capability: name, args } }, undefined, { timeout: 120000 });
   return { isError: !!r.isError, text: (r.content || []).map((x) => x.text || '').join('\n') };
 };
 const pidOf = (t) => Number((/PID\s+(\d+)/.exec(t) || [])[1]);

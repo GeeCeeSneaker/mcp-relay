@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // MCPRelay node capability server (module M1, ADR-0004): one process serving
 // MCP over loopback HTTP in both protocol generations (2026-07-28 natively,
-// 2025-era via the SDK's stateless fallback) and implementing the local tools
-// itself (Desktop Commander-compatible names/arguments). Supervised by the tray
+// 2025-era via the SDK's stateless fallback) and implementing the local
+// capabilities itself (Desktop Commander-compatible names/arguments). Clients see
+// a fixed tool set, list_capabilities + one invoke_<class> tool per risk class
+// (ADR-0007), so capability changes need no client-side tool refresh. Supervised by the tray
 // app (app/windows/MCPRelay.cs), which restarts it on exit or failed health.
 //
 //   MCPRELAY_BRIDGE_TOKEN=<token> node server.mjs [--port 18001] [--host 127.0.0.1]
@@ -27,7 +29,7 @@ import path from 'node:path';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '1.2.0';
+const VERSION = '2.0.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -132,13 +134,13 @@ const sessions = new Map(); // pid -> { child, out, readPos, exitCode, shell, st
 const running = () => [...sessions.values()].filter((s) => s.exitCode === null).length;
 function shellInvocation(command, shell) {
   if (WIN) {
-    const sh = shell || 'powershell.exe';
+    const sh = shell || SHELLS.default;
     if (/cmd(\.exe)?$/i.test(sh)) return [sh, ['/d', '/s', '/c', `chcp 65001>nul & ${command}`]];
     // UTF-8 output regardless of the console code page (e.g. GBK on Chinese Windows).
     const prefix = '[Console]::OutputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;';
     return [sh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', prefix + command]];
   }
-  return [shell || process.env.SHELL || '/bin/sh', ['-c', command]];
+  return [shell || SHELLS.default, ['-c', command]];
 }
 function killTree(pid) {
   return new Promise((resolve) => {
@@ -287,8 +289,27 @@ function audit(entry) {
 // --------------------------------------------- client-facing environment --
 const NODE_NAME = process.env.MCPRELAY_NODE_NAME || hostname();
 const OS_DESC = WIN ? `Windows ${Number(release().split('.')[2] || 0) >= 22000 ? '11' : '10'} ${arch()}` : `${process.platform} ${release()} ${arch()}`;
-const FILE_NOTE = ` [Node "${NODE_NAME}", ${OS_DESC}. File tools only work inside: ${ALLOWED.join('; ')}]`;
-const SHELL_NOTE = ` [Node "${NODE_NAME}", ${OS_DESC}. Default shell: ${WIN ? 'Windows PowerShell, UTF-8 output' : (process.env.SHELL || '/bin/sh')}; working directory: ${homedir()}. Commands run with the user's full rights and are NOT limited to the file roots]`;
+
+// Shells, detected once at startup. On Windows the default is PowerShell 7
+// (pwsh) when installed, else Windows PowerShell 5.1.
+const SHELLS = { default: WIN ? 'powershell.exe' : (process.env.SHELL || '/bin/sh'), available: [] };
+async function detectShells() {
+  if (!WIN) { SHELLS.available = [{ shell: SHELLS.default, note: 'POSIX shell' }]; return; }
+  const psVersion = (exe) => new Promise((resolve) => execFile(exe, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'],
+    { windowsHide: true, timeout: 20_000 }, (e, out) => resolve(e ? null : String(out).trim() || null)));
+  const pf = process.env.ProgramFiles || 'C:\\Program Files';
+  let pwsh = null;
+  for (const exe of ['pwsh.exe', path.join(pf, 'PowerShell', '7', 'pwsh.exe')]) {
+    const v = await psVersion(exe); if (v) { pwsh = { shell: exe === 'pwsh.exe' ? 'pwsh.exe' : exe, note: `PowerShell ${v}` }; break; }
+  }
+  const v5 = await psVersion('powershell.exe');
+  SHELLS.available = [pwsh, v5 && { shell: 'powershell.exe', note: `Windows PowerShell ${v5}` }, { shell: 'cmd.exe', note: 'Command Prompt' }].filter(Boolean);
+  SHELLS.default = (pwsh || { shell: 'powershell.exe' }).shell;
+}
+const shellLabel = () => SHELLS.available.find((s) => s.shell === SHELLS.default)?.note || SHELLS.default;
+const envNote = (kind) => kind === 'exec'
+  ? ` [Node "${NODE_NAME}", ${OS_DESC}. Default shell: ${shellLabel()}${WIN ? ', UTF-8 output' : ''}; other shells via args.shell: ${SHELLS.available.filter((s) => s.shell !== SHELLS.default).map((s) => `${s.shell} (${s.note})`).join(', ') || 'none'}. Working directory: ${homedir()}. Commands run with the user's full rights and are NOT limited to the file roots]`
+  : ` [Node "${NODE_NAME}", ${OS_DESC}. File capabilities only work inside: ${ALLOWED.join('; ')}]`;
 
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
@@ -298,7 +319,8 @@ const TOOLS = {
     run: async () => text(JSON.stringify({
       server_version: VERSION, node_name: NODE_NAME, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
       hostname: hostname(), os: `${process.platform} ${release()}`, arch: arch(), node_version: process.version,
-      allowed_dirs: ALLOWED, sessions: sessions.size, running_sessions: running(), audit_log: AUDIT || null, audit_max_bytes: AUDIT ? AUDIT_MAX : null,
+      allowed_dirs: ALLOWED, default_shell: SHELLS.default, shells: SHELLS.available,
+      sessions: sessions.size, running_sessions: running(), audit_log: AUDIT || null, audit_max_bytes: AUDIT ? AUDIT_MAX : null,
     }, null, 2)) },
   list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']),
     run: async (a) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10))).join('\n') || '(empty directory)') },
@@ -348,7 +370,7 @@ const TOOLS = {
       return text(JSON.stringify(info, null, 2)); } },
   search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links are not followed.', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']),
     run: async (a) => { const hits = await searchFiles(await allowedPath(a.path), a.pattern, a.content_pattern, Math.min(a.max_results ?? 100, 1000)); return text(hits.join('\n') || 'No matches.'); } },
-  start_process: { d: 'Run a shell command (PowerShell on Windows by default; shell: "cmd.exe" for cmd). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running and are addressed by PID.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
+  start_process: { d: 'Run a shell command in the default shell (see the environment; on Windows PowerShell 7 when installed) or in args.shell (e.g. "powershell.exe" for Windows PowerShell 5.1, "cmd.exe"). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running and are addressed by PID.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
     run: startProcess },
   read_process_output: { d: 'Read new output of a process started with start_process (waits up to timeout_ms for new output).', s: P({ pid: num, timeout_ms: num }, ['pid']),
     run: async (a) => { const s = sessions.get(a.pid); if (!s) return text(`No session found for PID ${a.pid}`, true);
@@ -366,52 +388,143 @@ const TOOLS = {
   list_processes: { d: 'List system processes (read-only), largest memory first: pid, parent_pid, name, path, start_time, cpu_time (s), rss (bytes). Filter by name (substring) or pid; limit (default 50, max 500). Command lines are not returned.', s: P({ name: str, pid: num, limit: num }),
     run: async (a) => { const rows = await listProcesses(a); return text(rows.length ? JSON.stringify(rows, null, 1) : 'No matching processes.'); } },
 };
-// MCP ToolAnnotations let clients (e.g. ChatGPT) tell reads from risky actions
-// and ask the user before destructive ones. kind: r = read-only,
-// w = writes but never destroys, d = may destroy/overwrite data or run code.
-const META = {
-  //                     title                      kind idempotent openWorld note
-  node_status:           ['Node status',            'r', true,  false, ' Call it first to learn this node\'s environment.'],
-  list_directory:        ['List directory',         'r', true,  false, FILE_NOTE],
-  read_file:             ['Read file',              'r', true,  false, FILE_NOTE],
-  write_file:            ['Write file',             'd', false, false, FILE_NOTE],
-  edit_block:            ['Edit file',              'd', false, false, FILE_NOTE],
-  create_directory:      ['Create directory',       'w', true,  false, FILE_NOTE],
-  move_file:             ['Move or rename',         'd', false, false, FILE_NOTE],
-  remove_path:           ['Delete file or folder',  'd', false, false, FILE_NOTE],
-  get_file_info:         ['File info / SHA-256',    'r', true,  false, FILE_NOTE],
-  search_files:          ['Search files',           'r', true,  false, FILE_NOTE],
-  start_process:         ['Run command',            'd', false, true,  SHELL_NOTE],
-  read_process_output:   ['Read process output',    'r', false, false, ''],
-  interact_with_process: ['Send input to process',  'd', false, true,  ''],
-  force_terminate:       ['Terminate process',      'd', true,  false, ''],
-  list_sessions:         ['List command sessions',  'r', true,  false, ''],
-  list_processes:        ['List system processes',  'r', true,  false, ''],
+// ---------------------------------------------------------- risk classes --
+// Clients (ChatGPT) cache a connector's tool list, so the exposed tools are a
+// small fixed set: list_capabilities plus one invoke_<class> tool per risk
+// class. Capabilities can change without a client-side refresh; each class
+// tool carries the MCP ToolAnnotations of its class, so clients still ask the
+// user before destructive or open-world actions. The server enforces classes:
+// a capability is only run through its own class tool.
+const CLASSES = {
+  read: { title: 'Read (no changes)', covers: 'reads files, directories, file info, process output, command sessions, system processes and node status; never changes anything',
+    hints: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  write: { title: 'Create (non-destructive)', covers: 'creates things without overwriting, changing or deleting existing data',
+    hints: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  destructive: { title: 'Modify or delete files, stop processes', covers: 'writes, overwrites, edits, moves or deletes files and folders, or terminates processes',
+    hints: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
+  exec: { title: 'Run shell commands', covers: "runs shell commands or sends input to running processes, with the user's full rights",
+    hints: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
 };
-const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => {
-  const [title, kind, idempotent, openWorld, note] = META[name];
+const META = {
+  //                     title                      class
+  node_status:           ['Node status',            'read'],
+  list_directory:        ['List directory',         'read'],
+  read_file:             ['Read file',              'read'],
+  get_file_info:         ['File info / SHA-256',    'read'],
+  search_files:          ['Search files',           'read'],
+  read_process_output:   ['Read process output',    'read'],
+  list_sessions:         ['List command sessions',  'read'],
+  list_processes:        ['List system processes',  'read'],
+  create_directory:      ['Create directory',       'write'],
+  write_file:            ['Write file',             'destructive'],
+  edit_block:            ['Edit file',              'destructive'],
+  move_file:             ['Move or rename',         'destructive'],
+  remove_path:           ['Delete file or folder',  'destructive'],
+  force_terminate:       ['Terminate process',      'destructive'],
+  start_process:         ['Run command',            'exec'],
+  interact_with_process: ['Send input to process',  'exec'],
+};
+const invokeTool = (cls) => `invoke_${cls}`;
+const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
+
+function catalog(onlyClass) {
+  const caps = Object.entries(TOOLS).filter(([n]) => !onlyClass || META[n][1] === onlyClass).map(([name, t]) => ({
+    name, class: META[name][1], invoke_with: invokeTool(META[name][1]), title: META[name][0], description: t.d, args_schema: t.s,
+  }));
   return {
-    name, title, description: t.d + note, inputSchema: t.s,
-    annotations: { title, readOnlyHint: kind === 'r', destructiveHint: kind === 'd', idempotentHint: idempotent, openWorldHint: openWorld },
+    node: NODE_NAME, server_version: VERSION,
+    catalog_version: createHash('sha256').update(JSON.stringify(caps)).digest('hex').slice(0, 12),
+    environment: { os: OS_DESC, file_roots: ALLOWED, default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
+      notes: ['File capabilities only work inside file_roots.', "Shell commands run with the user's full rights and are not limited to file_roots."] },
+    usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older.',
+    classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
+    capabilities: caps,
   };
-});
+}
+
+// Validates and lightly coerces arguments against the capability's flat
+// schema ("5" -> 5, "true" -> true). Errors name the problem and the schema so
+// the caller can correct itself.
+function checkArgs(schema, input) {
+  let a = input ?? {};
+  if (typeof a === 'string') { try { a = JSON.parse(a); } catch { return { error: 'args must be a JSON object' }; } }
+  if (a === null || typeof a !== 'object' || Array.isArray(a)) return { error: 'args must be a JSON object' };
+  const props = schema.properties || {}; const out = {};
+  for (const [k, v] of Object.entries(a)) {
+    const p = props[k];
+    if (!p) return { error: `unknown argument "${k}"` };
+    let x = v;
+    if (p.type === 'number' && typeof x === 'string' && x.trim() !== '' && Number.isFinite(Number(x))) x = Number(x);
+    if (p.type === 'boolean' && (x === 'true' || x === 'false')) x = x === 'true';
+    const ok = p.type === 'number' ? typeof x === 'number' && Number.isFinite(x) : typeof x === p.type;
+    if (!ok) return { error: `argument "${k}" must be a ${p.type}` };
+    if (p.enum && !p.enum.includes(x)) return { error: `argument "${k}" must be one of: ${p.enum.join(', ')}` };
+    out[k] = x;
+  }
+  for (const k of schema.required || []) if (out[k] === undefined) return { error: `missing required argument "${k}"` };
+  return { args: out };
+}
+
+const EXPOSED = () => [
+  { name: 'list_capabilities', title: 'List capabilities',
+    description: `List everything this node can do right now: each capability with its risk class, the invoke_* tool to use, a description and its argument schema, plus the node environment (OS, file roots, shells). Call it once at the start of a conversation and whenever a capability is reported unknown. Optional: class (${Object.keys(CLASSES).join(', ')}).${envNote('file')}`,
+    inputSchema: P({ class: { type: 'string', enum: Object.keys(CLASSES) } }),
+    annotations: { title: 'List capabilities', ...CLASSES.read.hints } },
+  ...Object.entries(CLASSES).map(([cls, c]) => ({
+    name: invokeTool(cls), title: c.title,
+    description: `Run one "${cls}" capability of this node: ${c.covers}. capability = a name from list_capabilities whose class is "${cls}" (currently: ${namesOf(cls).join(', ')}); args = that capability's arguments as a JSON object. Capabilities of another class are refused.${envNote(cls === 'exec' ? 'exec' : 'file')}`,
+    inputSchema: P({ capability: { type: 'string', description: `Capability name (class "${cls}")` },
+      args: { type: 'object', description: 'Arguments for the capability, per its args_schema in list_capabilities', additionalProperties: true } }, ['capability']),
+    annotations: { title: c.title, ...c.hints },
+  })),
+];
+
+async function invoke(cls, params, done) {
+  const name = params.capability;
+  if (typeof name !== 'string' || !Object.hasOwn(TOOLS, name)) {
+    done(typeof name === 'string' ? name.slice(0, 64) : '?', cls, false, 'unknown_capability');
+    return text(`Unknown capability "${name}". Capabilities of class "${cls}": ${namesOf(cls).join(', ')}. Call list_capabilities for the full current list.`, true);
+  }
+  const own = META[name][1];
+  if (own !== cls) {
+    done(name, cls, false, 'wrong_class');
+    return text(`"${name}" is a "${own}" capability; call ${invokeTool(own)} instead. Nothing was run.`, true);
+  }
+  const { args, error } = checkArgs(TOOLS[name].s, params.args);
+  if (error) {
+    done(name, cls, false, 'invalid_args');
+    return text(`Invalid args for ${name}: ${error}. args_schema: ${JSON.stringify(TOOLS[name].s)}`, true);
+  }
+  try {
+    const result = await withTimeout(TOOLS[name].run(args), CALL_TIMEOUT_MS, name);
+    done(name, cls, !result.isError, result.isError ? 'tool_error' : undefined);
+    return result;
+  } catch (e) {
+    const err = e instanceof ProtocolError ? 'invalid_args' : /timed out after/.test(e.message) ? 'timeout' : 'exception';
+    done(name, cls, false, err);
+    return text(`Error: ${e.message}`, true);
+  }
+}
 
 function mcpServer() {
   const server = new Server({ name: 'mcprelay-node', version: VERSION }, { capabilities: { tools: {} } });
-  server.setRequestHandler('tools/list', async () => ({ tools: TOOL_LIST }));
+  server.setRequestHandler('tools/list', async () => ({ tools: EXPOSED() }));
   server.setRequestHandler('tools/call', async (req) => {
-    const name = req.params.name; const t = TOOLS[name]; const started = Date.now();
-    const done = (ok, err) => audit({ t: new Date(started).toISOString(), tool: name, ok, ms: Date.now() - started, ...(err ? { err } : {}) });
-    if (!t) { done(false, 'unknown_tool'); throw new ProtocolError(-32602, `Unknown tool: ${name}`); }
-    try {
-      const result = await withTimeout(t.run(req.params.arguments || {}), CALL_TIMEOUT_MS, name);
-      done(!result.isError, result.isError ? 'tool_error' : undefined);
-      return result;
-    } catch (e) {
-      if (e instanceof ProtocolError) { done(false, 'invalid_params'); throw e; }
-      done(false, /timed out after/.test(e.message) ? 'timeout' : 'exception');
-      return text(`Error: ${e.message}`, true);
+    const tool = req.params.name; const params = req.params.arguments || {}; const started = Date.now();
+    const done = (name, cls, ok, err) => audit({ t: new Date(started).toISOString(), tool: name, ...(cls ? { cls } : {}), ok, ms: Date.now() - started, ...(err ? { err } : {}) });
+    if (tool === 'list_capabilities') {
+      if (params.class !== undefined && !Object.hasOwn(CLASSES, params.class)) {
+        done(tool, null, false, 'invalid_args'); return text(`class must be one of: ${Object.keys(CLASSES).join(', ')}`, true);
+      }
+      done(tool, null, true);
+      return text(JSON.stringify(catalog(params.class), null, 1));
     }
+    const cls = typeof tool === 'string' && tool.startsWith('invoke_') ? tool.slice(7) : null;
+    if (!cls || !Object.hasOwn(CLASSES, cls)) {
+      done(String(tool).slice(0, 64), null, false, 'unknown_tool');
+      throw new ProtocolError(-32602, `Unknown tool: ${tool}. Tools: list_capabilities, ${Object.keys(CLASSES).map(invokeTool).join(', ')}`);
+    }
+    return invoke(cls, params, done);
   });
   return server;
 }
@@ -449,7 +562,8 @@ process.on('unhandledRejection', (e) => log('unhandled rejection:', e?.stack || 
 process.on('uncaughtException', (e) => { log('uncaught exception, exiting for a clean restart:', e?.stack || e); shutdown(1); });
 
 http.on('error', (e) => { log('listen error:', e.message); process.exit(1); }); // e.g. port busy -> supervisor retries
+await detectShells(); // before listening, so the first tools/list already names the right shell
 http.listen(Number(opt.port), opt.host, () => {
-  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}; audit log: ${AUDIT || 'off'}`);
+  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}; default shell: ${shellLabel()}; audit log: ${AUDIT || 'off'}`);
   if (!TOKEN_DIGEST) log('WARNING: MCPRELAY_BRIDGE_TOKEN not set; /mcp accepts unauthenticated local requests');
 });

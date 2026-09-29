@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-09-29 — Node server v2.0.0: fixed risk-class tools (ADR-0007)
+
+- Owner proposal adopted. Clients now see five fixed tools: `list_capabilities` plus `invoke_read`, `invoke_write`, `invoke_destructive` and `invoke_exec`, each carrying its class's MCP annotations.
+- Capabilities can change without a ChatGPT refresh. Classes and arguments are enforced on the server.
+- On Windows, PowerShell 7 is the default shell when installed; the detected shells are listed in the catalog.
+- ChatGPT's Refresh control is missing on the Owner's plan. The RUNBOOK now covers both Refresh and re-add, and notes that chats opened before a re-add fail with "Resource not found".
+- Evidence: `docs/evidence/P2-node-2.0-risk-class-dispatch-2026-09-29.md`.
+
 ## 2026-09-29 — Node server v1.2.0 and ingress host rebuild
 
 - Tools describe themselves:

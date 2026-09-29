@@ -100,18 +100,16 @@ VPS self-healing:
 1. ChatGPT → Settings → Security and login → enable **Developer mode**.
 2. Add a custom connector (app) with URL `https://<mcp-domain>/mcp`, authentication **OAuth**.
 3. Log in on the gateway page with the gateway user and the password from `/root/mcprelay-gateway-password`, then approve.
-4. Tools appear as `<node>_<tool>`.
+4. Tools appear as `<node>_list_capabilities` and `<node>_invoke_{read,write,destructive,exec}` (ADR-0007), next to the gateway's `gateway_status`. Start each new conversation there; chats opened before a connector was re-added stay bound to the old connector and fail with "Resource not found".
+5. ChatGPT asks before calls to `invoke_destructive` and `invoke_exec`. Approving `invoke_read` permanently is fine; do not choose "always allow" for the other two, since that approves the whole class.
 
-### When the node's tool set changes
+### When the node's capabilities change
 
-ChatGPT caches the tool list when the connector is created. It does not re-fetch it on refresh or on `list_changed` (observed 2026-09-29), so after tools are added, removed or renamed, **delete and re-add the connector**. Restarting the gateway is not needed; it always lists the node's current tools.
+Nothing to do in ChatGPT. The fixed tools never change when capabilities are added, removed or changed; the model reads the current list from `list_capabilities`. The capability names quoted in the cached tool descriptions can be older; `list_capabilities` is authoritative.
 
-Procedure:
-1. Re-run `vps-install.sh` **without** `--allow-client` (first-connection mode).
-2. Re-add the connector in ChatGPT and log in.
-3. Read the `client_id` from the gateway log ("Issuing access/refresh token pair to client ..."). With CIMD it stayed the same connector URL.
-4. Re-run `vps-install.sh` with `--allow-client <client_id>`.
-5. Drop the older grants.
+ChatGPT caches the connector's tool list itself (observed 2026-09-29; it ignores `list_changed`). Only when the fixed tools change, e.g. a new risk class, refresh it:
+1. Try **Refresh** in the app's details in ChatGPT settings (Apps → the app → actions details). Not every plan or UI version shows it.
+2. Otherwise delete and re-add the connector, then log in. With CIMD the `client_id` stays the same, so the `--allow-client` list needs no change.
 
 Forgotten gateway password: read it over your own SSH session with `cat /root/mcprelay-gateway-password`, never through a chat.
 

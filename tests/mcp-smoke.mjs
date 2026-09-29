@@ -49,7 +49,8 @@ const LONG_RUNNING = opt.os === 'windows'
   ? { shell: 'powershell.exe', command: 'for ($i=1; $i -le 90; $i++) { "tick $i"; Start-Sleep -Seconds 1 }' }
   : { shell: '/bin/sh', command: 'i=1; while [ $i -le 90 ]; do echo tick $i; i=$((i+1)); sleep 1; done' };
 
-const REQUIRED_TOOLS = [
+const EXPOSED_TOOLS = ['list_capabilities', 'invoke_read', 'invoke_write', 'invoke_destructive', 'invoke_exec'];
+const REQUIRED_CAPS = [
   'node_status', 'list_directory', 'read_file', 'write_file', 'edit_block', 'create_directory', 'move_file',
   'remove_path', 'get_file_info', 'search_files',
   'start_process', 'read_process_output', 'interact_with_process', 'force_terminate', 'list_sessions', 'list_processes',
@@ -76,10 +77,26 @@ async function connect() {
   return client;
 }
 
-async function call(client, name, args) {
-  const res = await client.callTool({ name: tool(name), arguments: args });
+// Capabilities are called through the invoke_<class> tool named in the node's
+// catalog (list_capabilities), exactly as a model client would.
+let CATALOG = null;
+async function catalog(client) {
+  if (!CATALOG) {
+    const res = await client.callTool({ name: tool('list_capabilities'), arguments: {} });
+    CATALOG = JSON.parse(res.content[0].text);
+    CATALOG.via = new Map(CATALOG.capabilities.map((c) => [c.name, c.invoke_with]));
+  }
+  return CATALOG;
+}
+async function invokeRaw(client, via, args) {
+  const res = await client.callTool({ name: tool(via), arguments: args });
   const text = (res.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
   return { isError: !!res.isError, text };
+}
+async function call(client, name, args) {
+  const via = (await catalog(client)).via.get(name);
+  if (!via) throw new Error(`capability ${name} is not in the catalog`);
+  return invokeRaw(client, via, { capability: name, args });
 }
 
 async function check(name, fn) {
@@ -137,12 +154,21 @@ const initOk = await check('initialize', async () => {
 });
 if (!initOk) process.exit(1);
 
-await check('tools/list contains the required tools', async () => {
+await check('tools/list exposes exactly the fixed class tools', async () => {
   const { tools } = await a.listTools();
-  const names = new Set(tools.map((t) => t.name));
-  const missing = REQUIRED_TOOLS.map(tool).filter((n) => !names.has(n));
-  expect(missing.length === 0, `missing: ${missing.join(', ')}`);
+  const mine = tools.map((t) => t.name).filter((n) => n.startsWith(opt.prefix)).sort();
+  expect(JSON.stringify(mine) === JSON.stringify(EXPOSED_TOOLS.map(tool).sort()), `got: ${mine.join(', ')}`);
   return `${tools.length} tools`;
+});
+
+await check('catalog lists the required capabilities with class and schema', async () => {
+  const c = await catalog(a);
+  const names = new Set(c.capabilities.map((x) => x.name));
+  const missing = REQUIRED_CAPS.filter((n) => !names.has(n));
+  expect(missing.length === 0, `missing: ${missing.join(', ')}`);
+  expect(c.capabilities.every((x) => x.class && x.invoke_with === `invoke_${x.class}` && x.args_schema?.type === 'object' && x.description), 'incomplete catalog entry');
+  expect(c.environment?.file_roots?.length > 0 && c.environment.default_shell && c.catalog_version, 'environment/catalog_version missing');
+  return `${c.capabilities.length} capabilities, catalog ${c.catalog_version}, default shell: ${c.environment.default_shell}`;
 });
 
 await check('tools carry no UI widget references', async () => {
@@ -322,23 +348,57 @@ await check('remove_path removes a link, never its target; recursive delete does
   await run(opt.os === 'windows' ? `Remove-Item -Recurse -Force '${outsideDir}'` : `rm -rf '${outsideDir}'`);
 });
 
-// --- v1.2: annotations, environment context, audit log ---
-await check('tools carry titles and risk annotations', async () => {
+// --- v2.0: risk-class tools, class enforcement, argument validation ---
+await check('class tools carry titles and risk annotations', async () => {
   const { tools } = await b.listTools();
-  const by = Object.fromEntries(tools.map((t) => [t.name, t]));
-  const ann = (n) => by[tool(n)]?.annotations || {};
-  for (const n of REQUIRED_TOOLS) expect(ann(n).title && typeof ann(n).readOnlyHint === 'boolean', `no annotations on ${n}`);
-  expect(ann('remove_path').destructiveHint === true && ann('remove_path').readOnlyHint === false, 'remove_path must be destructive');
-  expect(ann('read_file').readOnlyHint === true && ann('read_file').destructiveHint === false, 'read_file must be read-only');
-  expect(ann('start_process').destructiveHint === true && ann('start_process').openWorldHint === true, 'start_process must be destructive/open-world');
-  expect(ann('create_directory').readOnlyHint === false && ann('create_directory').destructiveHint === false, 'create_directory is a non-destructive write');
+  const ann = (n) => tools.find((t) => t.name === tool(n))?.annotations || {};
+  for (const n of EXPOSED_TOOLS) expect(ann(n).title && typeof ann(n).readOnlyHint === 'boolean', `no annotations on ${n}`);
+  expect(ann('list_capabilities').readOnlyHint === true && ann('invoke_read').readOnlyHint === true && ann('invoke_read').destructiveHint === false, 'read tools must be read-only');
+  expect(ann('invoke_write').readOnlyHint === false && ann('invoke_write').destructiveHint === false, 'invoke_write is a non-destructive write');
+  expect(ann('invoke_destructive').destructiveHint === true && ann('invoke_destructive').openWorldHint === false, 'invoke_destructive must be destructive');
+  expect(ann('invoke_exec').destructiveHint === true && ann('invoke_exec').openWorldHint === true, 'invoke_exec must be destructive/open-world');
+  const c = await catalog(b);
+  const cls = (n) => c.capabilities.find((x) => x.name === n)?.class;
+  expect(cls('read_file') === 'read' && cls('create_directory') === 'write' && cls('remove_path') === 'destructive' && cls('start_process') === 'exec', 'capability classes changed');
 });
 
 await check('tool descriptions carry the node environment', async () => {
   const { tools } = await b.listTools();
   const d = (n) => tools.find((t) => t.name === tool(n))?.description || '';
-  expect(d('list_directory').includes(status.allowed_dirs[0]), `allowed root missing: ${brief(d('list_directory'))}`);
-  expect(/Default shell/.test(d('start_process')) && /full rights/.test(d('start_process')), `shell context missing: ${brief(d('start_process'))}`);
+  expect(d('invoke_read').includes(status.allowed_dirs[0]), `allowed root missing: ${brief(d('invoke_read'))}`);
+  expect(/Default shell/.test(d('invoke_exec')) && /full rights/.test(d('invoke_exec')), `shell context missing: ${brief(d('invoke_exec'))}`);
+  expect(d('invoke_destructive').includes('remove_path'), 'current capability names missing');
+});
+
+await check('a capability is refused through another class tool and nothing runs', async () => {
+  const r = await invokeRaw(b, 'invoke_read', { capability: 'remove_path', args: { path: fixtureFile } });
+  expect(r.isError && /invoke_destructive/.test(r.text), brief(r.text));
+  const x = await invokeRaw(b, 'invoke_write', { capability: 'start_process', args: { command: 'echo nope', timeout_ms: 1000 } });
+  expect(x.isError && /invoke_exec/.test(x.text), brief(x.text));
+  expect(!(await call(b, 'get_file_info', { path: fixtureFile })).isError, 'fixture file was removed!');
+});
+
+await check('unknown capability and invalid args are explained', async () => {
+  const u = await invokeRaw(b, 'invoke_read', { capability: 'no_such_thing', args: {} });
+  expect(u.isError && /list_capabilities/.test(u.text) && /read_file/.test(u.text), brief(u.text));
+  const m = await invokeRaw(b, 'invoke_read', { capability: 'read_file', args: {} });
+  expect(m.isError && /missing required argument "path"/.test(m.text) && /args_schema/.test(m.text), brief(m.text));
+  const k = await invokeRaw(b, 'invoke_read', { capability: 'read_file', args: { file: fixtureFile } });
+  expect(k.isError && /unknown argument "file"/.test(k.text), brief(k.text));
+  const ty = await invokeRaw(b, 'invoke_read', { capability: 'read_file', args: { path: 42 } });
+  expect(ty.isError && /must be a string/.test(ty.text), brief(ty.text));
+  // numeric strings are coerced ("-1" -> -1), a common model habit
+  const co = await invokeRaw(b, 'invoke_read', { capability: 'read_file', args: { path: fixtureFile, offset: '-1' } });
+  expect(!co.isError && /line2-edited/.test(co.text), brief(co.text));
+});
+
+await check('default shell is the one the catalog advertises', async () => {
+  const c = await catalog(b);
+  const r = await call(b, 'start_process', { command: 'echo shell-ok', timeout_ms: 20000 });
+  const used = (r.text.match(/shell: ([^)]+)\)/) || [])[1] || '';
+  const want = c.environment.shells.find((s) => s.note === c.environment.default_shell)?.shell || c.environment.default_shell;
+  expect(!r.isError && /shell-ok/.test(r.text) && used && want.toLowerCase().endsWith(used.toLowerCase()), `used ${used}, catalog ${c.environment.default_shell}: ${brief(r.text)}`);
+  return `${c.environment.default_shell} (${used})`;
 });
 
 await check('audit log records calls without arguments and stays within its cap', async () => {
@@ -356,7 +416,8 @@ await check('audit log records calls without arguments and stays within its cap'
   const lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
   expect(lines.length > 0 && lines.every((e) => e.t && e.tool && typeof e.ok === 'boolean' && typeof e.ms === 'number'), brief(text));
   expect(lines.some((e) => e.tool === 'node_status'), 'the node_status call just made is not in the audit log');
-  const allowedKeys = new Set(['t', 'tool', 'ok', 'ms', 'err']);
+  expect(lines.some((e) => e.tool === 'remove_path' && e.cls === 'read' && e.err === 'wrong_class'), 'refused cross-class call not audited');
+  const allowedKeys = new Set(['t', 'tool', 'cls', 'ok', 'ms', 'err']);
   expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), 'unexpected fields in audit entries');
   expect(!text.includes(opt.fixture) && !text.includes('mcp-relay-ok'), 'arguments/results leaked into the audit log');
   const size = J(await call(b, 'get_file_info', { path: st.audit_log })).size;
