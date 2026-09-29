@@ -244,10 +244,13 @@ async function listProcesses({ name, pid, limit = 50 }) {
       const stat = await fs.readFile(`/proc/${p}/stat`, 'utf8');
       const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
       const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-      if (name && !comm.toLowerCase().includes(String(name).toLowerCase())) continue;
-      const rss = Number((await fs.readFile(`/proc/${p}/statm`, 'utf8')).split(' ')[1]) * page;
       let exe = null; try { exe = await fs.readlink(`/proc/${p}/exe`); } catch { /* other user's process */ }
-      rows.push({ pid: Number(p), parent_pid: Number(f[1]), name: comm, path: exe,
+      // comm can be a thread name (Node.js reports "MainThread"); prefer the executable's name.
+      const display = exe ? path.basename(exe) : comm;
+      const want = name ? String(name).toLowerCase() : null;
+      if (want && !display.toLowerCase().includes(want) && !comm.toLowerCase().includes(want)) continue;
+      const rss = Number((await fs.readFile(`/proc/${p}/statm`, 'utf8')).split(' ')[1]) * page;
+      rows.push({ pid: Number(p), parent_pid: Number(f[1]), name: display, path: exe,
         start_time: new Date((btime + Number(f[19]) / hz) * 1000).toISOString(), cpu_time: (Number(f[11]) + Number(f[12])) / hz, rss });
     } catch { /* process exited meanwhile */ }
   }
