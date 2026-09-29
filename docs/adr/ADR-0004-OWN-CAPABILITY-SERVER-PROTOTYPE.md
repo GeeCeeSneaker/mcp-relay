@@ -4,6 +4,17 @@
 - Status: `ACCEPTED` (Owner, 2026-09-29): adopt; default shell PowerShell; extra tools (PDF/Office/images, etc.) added on demand. Implemented as `node-runtime/server.mjs` 1.0.0; Desktop Commander and the bridge were removed.
 - Change class: C3. It reverses the "no project-owned capability reimplementation" rule in `MODULE_DESIGN.md` M1.
 
+## Update 2026-09-29 — v1.1.0
+
+Additions from the Owner's improvement proposal, each backed by observed need:
+- `node_status`;
+- `list_processes` (no command lines);
+- `remove_path` (root-protected, link-safe);
+- `read_file` tail (`offset < 0`);
+- `get_file_info` `sha256`.
+
+Evidence: `docs/evidence/P2-tools-v1.1-2026-09-29.md`.
+
 ## Context
 
 The Owner asked why MCPRelay depends on Desktop Commander (DC) at all. DC being 2025-era only is **not** a reason: bridge 0.4.0 serves 2026-07-28 regardless, because the bridge ↔ DC stdio hop is local and costs milliseconds.

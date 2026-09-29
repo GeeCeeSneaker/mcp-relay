@@ -19,14 +19,15 @@
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { homedir } from 'node:os';
+import { homedir, hostname, arch, release } from 'node:os';
 import { parseArgs } from 'node:util';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -177,21 +178,112 @@ async function startProcess({ command, timeout_ms: timeoutMs = 10_000, shell }) 
   return text(`Process started with PID ${child.pid} (shell: ${s.shell})\nInitial output:\n${takeOutput(s)}${status}`);
 }
 
+// --------------------------------------------------- remove / hash / procs --
+const STARTED_AT = Date.now();
+const insideRoot = (x) => ALLOWED.some((root) => { const r = norm(root); return x.startsWith(r.endsWith(path.sep) ? r : r + path.sep); });
+
+async function removePath(p, recursive) {
+  if (typeof p !== 'string' || !p) throw new ProtocolError(-32602, 'path is required');
+  // Resolve the PARENT (so links inside the path are resolved) but act on the entry itself:
+  // removing a symlink/junction removes only the link, never its target.
+  const abs = path.resolve(p);
+  const target = path.join(await allowedPath(path.dirname(abs)), path.basename(abs));
+  const x = norm(target);
+  if (!insideRoot(x)) throw new Error(`Path not allowed: ${p}. Must be strictly inside one of: ${ALLOWED.join(', ')}`);
+  if (ALLOWED.some((root) => { const r = norm(root); return r === x || r.startsWith(x + path.sep); })) {
+    throw new Error(`Refusing to remove an allowed root (or a directory containing one): ${p}`);
+  }
+  let st;
+  try { st = await fs.lstat(target); } catch (e) { if (e.code === 'ENOENT') return text(`Not found: ${p}`, true); throw e; }
+  if (st.isSymbolicLink()) {
+    try { await fs.unlink(target); } catch (e) { if (WIN && ['EPERM', 'EISDIR'].includes(e.code)) await fs.rmdir(target); else throw e; }
+    return text(`Removed link ${p} (its target was not touched)`);
+  }
+  if (st.isDirectory()) {
+    if (!recursive) {
+      try { await fs.rmdir(target); } catch (e) { if (['ENOTEMPTY', 'EEXIST'].includes(e.code)) return text(`Directory not empty: ${p}. Pass recursive=true to remove it with its contents.`, true); throw e; }
+      return text(`Removed empty directory ${p}`);
+    }
+    await fs.rm(target, { recursive: true, force: false }); // lstat-based: links inside are unlinked, not followed
+    return text(`Removed directory ${p} and its contents`);
+  }
+  await fs.unlink(target);
+  return text(`Removed file ${p}`);
+}
+
+function sha256File(p) {
+  return new Promise((resolve, reject) => {
+    const h = createHash('sha256');
+    createReadStream(p).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', reject);
+  });
+}
+
+// System-wide read-only process listing. Command lines are deliberately not
+// returned: other programs' arguments can contain passwords or tokens.
+async function listProcesses({ name, pid, limit = 50 }) {
+  const max = Math.min(Math.max(1, Number(limit) || 50), 500);
+  if (pid !== undefined && !Number.isInteger(pid)) throw new ProtocolError(-32602, 'pid must be an integer');
+  if (name !== undefined && !/^[\w .+-]{1,100}$/.test(String(name))) throw new ProtocolError(-32602, 'name may contain only letters, digits, space, . _ + -');
+  if (WIN) {
+    const filter = pid !== undefined ? `-Filter "ProcessId=${pid}"` : name ? `-Filter "Name LIKE '%${name}%'"` : '';
+    const script = `$ErrorActionPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;` +
+      `@(Get-CimInstance Win32_Process ${filter} | Sort-Object WorkingSetSize -Descending | Select-Object -First ${max} | ForEach-Object { [pscustomobject]@{` +
+      `pid=$_.ProcessId;parent_pid=$_.ParentProcessId;name=$_.Name;path=$_.ExecutablePath;` +
+      `start_time=$(if($_.CreationDate){$_.CreationDate.ToString('o')});cpu_time=[math]::Round(($_.UserModeTime+$_.KernelModeTime)/1e7,2);rss=[int64]$_.WorkingSetSize} }) | ConvertTo-Json -Compress -Depth 2`;
+    const out = await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      { windowsHide: true, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve(stdout))));
+    const parsed = out.trim() ? JSON.parse(out) : [];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  }
+  const hz = 100; const page = 4096;
+  const btime = Number(((await fs.readFile('/proc/stat', 'utf8')).match(/^btime (\d+)/m) || [])[1] || 0);
+  const pids = pid !== undefined ? [String(pid)] : (await fs.readdir('/proc')).filter((d) => /^\d+$/.test(d));
+  const rows = [];
+  for (const p of pids) {
+    try {
+      const stat = await fs.readFile(`/proc/${p}/stat`, 'utf8');
+      const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      let exe = null; try { exe = await fs.readlink(`/proc/${p}/exe`); } catch { /* other user's process */ }
+      // comm can be a thread name (Node.js reports "MainThread"); prefer the executable's name.
+      const display = exe ? path.basename(exe) : comm;
+      const want = name ? String(name).toLowerCase() : null;
+      if (want && !display.toLowerCase().includes(want) && !comm.toLowerCase().includes(want)) continue;
+      const rss = Number((await fs.readFile(`/proc/${p}/statm`, 'utf8')).split(' ')[1]) * page;
+      rows.push({ pid: Number(p), parent_pid: Number(f[1]), name: display, path: exe,
+        start_time: new Date((btime + Number(f[19]) / hz) * 1000).toISOString(), cpu_time: (Number(f[11]) + Number(f[12])) / hz, rss });
+    } catch { /* process exited meanwhile */ }
+  }
+  return rows.sort((a, b) => b.rss - a.rss).slice(0, max);
+}
+
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = { type: 'string' }; const num = { type: 'number' };
 const TOOLS = {
+  node_status: { d: 'Status of this MCPRelay node runtime: version, PID, uptime, host, OS, allowed file roots and process-session counts. Contains no credentials.', s: P({}), ro: true,
+    run: async () => text(JSON.stringify({
+      server_version: VERSION, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
+      hostname: hostname(), os: `${process.platform} ${release()}`, arch: arch(), node_version: process.version,
+      allowed_dirs: ALLOWED, sessions: sessions.size, running_sessions: running(),
+    }, null, 2)) },
   list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']), ro: true,
     run: async (a) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10))).join('\n') || '(empty directory)') },
-  read_file: { d: 'Read a UTF-8 text file by lines. offset: first line (0-based); length: max lines (default 1000).', s: P({ path: str, offset: num, length: num }, ['path']), ro: true,
+  read_file: { d: 'Read a UTF-8 text file by lines. offset >= 0: first line (0-based); offset < 0: the last |offset| lines (tail, e.g. -50 for logs). length: max lines (default 1000).', s: P({ path: str, offset: num, length: num }, ['path']), ro: true,
     run: async (a) => {
       const p = await allowedPath(a.path); const st = await fs.stat(p);
       if (st.isDirectory()) return text(`${a.path} is a directory; use list_directory`, true);
       if (st.size > 64 * 1024 * 1024) return text(`File too large to read (${st.size} bytes)`, true);
       const buf = await fs.readFile(p);
       if (buf.subarray(0, 8000).includes(0)) return text(`Binary file (${buf.length} bytes) not shown: ${a.path}`, true);
-      const lines = buf.toString('utf8').split(/\r?\n/); const off = Math.max(0, a.offset ?? 0); const len = Math.max(1, a.length ?? 1000);
-      const part = lines.slice(off, off + len);
+      const lines = buf.toString('utf8').split(/\r?\n/);
+      const len = Math.max(1, a.length ?? 1000);
+      if ((a.offset ?? 0) < 0) {
+        const body = lines.length && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines; // ignore the final newline
+        const n = Math.min(Math.abs(a.offset), len, body.length); const from = body.length - n;
+        return text(`[Reading last ${n} lines (lines ${from}-${body.length - 1} of ${body.length})]\n\n${body.slice(from).join('\n')}`);
+      }
+      const off = a.offset ?? 0; const part = lines.slice(off, off + len);
       return text(`[Reading ${part.length} lines from line ${off} (total: ${lines.length} lines, ${Math.max(0, lines.length - off - part.length)} remaining)]\n\n${part.join('\n')}`);
     } },
   write_file: { d: 'Write (mode=rewrite, default) or append (mode=append) UTF-8 text to a file; creates parent directories.', s: P({ path: str, content: str, mode: { type: 'string', enum: ['rewrite', 'append'] } }, ['path', 'content']),
@@ -214,9 +306,13 @@ const TOOLS = {
     run: async (a) => { await fs.mkdir(await allowedPath(a.path), { recursive: true }); return text(`Directory ready: ${a.path}`); } },
   move_file: { d: 'Move or rename a file or directory.', s: P({ source: str, destination: str }, ['source', 'destination']),
     run: async (a) => { await fs.rename(await allowedPath(a.source), await allowedPath(a.destination)); return text(`Moved ${a.source} -> ${a.destination}`); } },
-  get_file_info: { d: 'File or directory metadata.', s: P({ path: str }, ['path']), ro: true,
-    run: async (a) => { const st = await fs.stat(await allowedPath(a.path));
-      return text(JSON.stringify({ size: st.size, type: st.isDirectory() ? 'directory' : 'file', modified: st.mtime, created: st.birthtime }, null, 2)); } },
+  remove_path: { d: 'Delete a file, an empty directory, or (recursive=true) a directory with its contents. Only inside the allowed roots; never an allowed root itself. Links are removed without touching their targets.', s: P({ path: str, recursive: { type: 'boolean' } }, ['path']),
+    run: async (a) => removePath(a.path, a.recursive === true) },
+  get_file_info: { d: 'File or directory metadata; sha256=true adds the file\'s SHA-256.', s: P({ path: str, sha256: { type: 'boolean' } }, ['path']), ro: true,
+    run: async (a) => { const p = await allowedPath(a.path); const st = await fs.stat(p);
+      const info = { size: st.size, type: st.isDirectory() ? 'directory' : 'file', modified: st.mtime, created: st.birthtime };
+      if (a.sha256 === true && !st.isDirectory()) info.sha256 = await sha256File(p);
+      return text(JSON.stringify(info, null, 2)); } },
   search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links are not followed.', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']), ro: true,
     run: async (a) => { const hits = await searchFiles(await allowedPath(a.path), a.pattern, a.content_pattern, Math.min(a.max_results ?? 100, 1000)); return text(hits.join('\n') || 'No matches.'); } },
   start_process: { d: 'Run a shell command (PowerShell on Windows by default; shell: "cmd.exe" for cmd). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running and are addressed by PID.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
@@ -234,6 +330,8 @@ const TOOLS = {
       await killTree(a.pid); return text(`Terminated process ${a.pid}`); } },
   list_sessions: { d: 'List processes started with start_process.', s: P({}), ro: true,
     run: async () => text([...sessions.entries()].map(([pid, s]) => `PID: ${pid}, ${s.exitCode === null ? 'running' : `exited (${s.exitCode})`}, runtime: ${Math.round((Date.now() - s.started) / 1000)}s`).join('\n') || 'No sessions.') },
+  list_processes: { d: 'List system processes (read-only), largest memory first: pid, parent_pid, name, path, start_time, cpu_time (s), rss (bytes). Filter by name (substring) or pid; limit (default 50, max 500). Command lines are not returned.', s: P({ name: str, pid: num, limit: num }), ro: true,
+    run: async (a) => { const rows = await listProcesses(a); return text(rows.length ? JSON.stringify(rows, null, 1) : 'No matching processes.'); } },
 };
 const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.d, inputSchema: t.s, annotations: { readOnlyHint: !!t.ro } }));
 

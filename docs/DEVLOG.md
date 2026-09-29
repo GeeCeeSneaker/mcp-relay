@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-29 — Node server v1.1.0: 17-tool set
+
+- Implemented the Owner's proposal:
+  - `node_status`, `list_processes` (no command lines) and `remove_path` (strictly inside roots, root-protected, removes links without touching targets, recursive delete never follows links);
+  - `read_file` tail;
+  - `get_file_info` sha256.
+- The smoke suite gained 7 checks (CI runs them on Windows and Linux, with the destructive root check only on throwaway runners).
+- P0 was re-diagnosed: the gateway always serves the current list, and the stale list was ChatGPT's connector cache. Its acceptance run passed on the live system: with the gateway PID unchanged, the list went 14 → 17 tools right after the node update.
+
 ## 2026-09-29 — Own capability server live; reliability hardening (ADR-0004 accepted, ADR-0006)
 
 - **Owner decisions:** adopt the project-owned server, PowerShell default, extra tools on demand, and reliability first.
