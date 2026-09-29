@@ -53,7 +53,9 @@ def public_call(name, args):
 bh = {'authorization': f'Bearer {BRIDGE_TOKEN}', 'accept': 'application/json, text/event-stream', 'content-type': 'application/json'}
 r = c.post(BRIDGE, headers=bh, json={'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                                      'params': {'protocolVersion': '2025-11-25', 'capabilities': {}, 'clientInfo': {'name': 'perf', 'version': '0'}}})
-bh['mcp-session-id'] = r.headers['mcp-session-id']; bh['mcp-protocol-version'] = '2025-11-25'
+if r.headers.get('mcp-session-id'):  # sessionful backend; stateless backends return none
+    bh['mcp-session-id'] = r.headers['mcp-session-id']
+bh['mcp-protocol-version'] = '2025-11-25'
 c.post(BRIDGE, headers=bh, json={'jsonrpc': '2.0', 'method': 'notifications/initialized'})
 
 

@@ -58,6 +58,20 @@ jobs:
             echo "== protocol era: $era"
             node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
           done
+      - name: Smoke test desk prototype (ADR-0004)
+        run: |
+          npm ci --prefix prototype/desk --no-fund --no-audit
+          node prototype/desk/desk.mjs --port 18002 > desk.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:18002/healthz >/dev/null && break; sleep 1; done
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            FIXTURE="$(cygpath -w "$HOME")\\mcprelay-fixture-desk"; OSNAME=windows
+          else
+            FIXTURE="$HOME/mcprelay-fixture-desk"; OSNAME=linux
+          fi
+          for era in legacy modern; do
+            echo "== desk, protocol era: $era"
+            node tests/mcp-smoke.mjs --url http://127.0.0.1:18002/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
+          done
       - name: Listener must be loopback-only
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -76,4 +90,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Bridge log
         if: always()
-        run: cat bridge.log || true
+        run: cat bridge.log desk.log || true
