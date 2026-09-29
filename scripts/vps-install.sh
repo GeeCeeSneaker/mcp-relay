@@ -39,6 +39,8 @@ done
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 
 log() { echo "[vps-install] $*"; }
+# Debian/Ubuntu name the unit ssh.service, RHEL-family sshd.service.
+reload_sshd() { systemctl reload ssh 2>/dev/null || systemctl reload sshd; }
 BIN=/opt/mcprelay/bin
 mkdir -p "$BIN" /etc/mcprelay
 
@@ -167,8 +169,22 @@ if [ "$(printf '%s\n' "$current_block" | grep -v '^#' | sed '/^$/d')" != "$wante
     cp -p /etc/ssh/sshd_config.mcprelay-bak /etc/ssh/sshd_config
     echo "sshd config test failed; restored backup" >&2; exit 1
   fi
-  systemctl reload sshd
+  reload_sshd
 fi
+
+# --- journal size cap ----------------------------------------------------------
+# All service logs go to journald; cap them so logs never fill the disk.
+install -d /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/mcprelay-size-limit.conf.new <<'EOF'
+[Journal]
+SystemMaxUse=200M
+SystemKeepFree=2G
+MaxRetentionSec=7day
+EOF
+if ! cmp -s /etc/systemd/journald.conf.d/mcprelay-size-limit.conf.new /etc/systemd/journald.conf.d/mcprelay-size-limit.conf; then
+  mv /etc/systemd/journald.conf.d/mcprelay-size-limit.conf.new /etc/systemd/journald.conf.d/mcprelay-size-limit.conf
+  systemctl restart systemd-journald; log "journald capped at 200M / 7 days"
+else rm -f /etc/systemd/journald.conf.d/mcprelay-size-limit.conf.new; fi
 
 # --- services ----------------------------------------------------------------
 echo "$domain" > /etc/mcprelay/domain

@@ -33,6 +33,13 @@ The script is idempotent. It:
 
 The gateway login password is in `/root/mcprelay-gateway-password` (root-only). Read it over your own SSH session; never paste it into chats or tickets.
 
+Supported hosts: systemd-based Debian/Ubuntu and RHEL-family distributions. Both scripts detect the SSH unit name (`ssh`/`sshd`) and the admin group (`sudo`/`wheel`); with an `sshd_config.d` include the hardening goes to `00-mcprelay-harden.conf`.
+
+After an OS reinstall of the VPS:
+1. Pin the new SSH host key: verify its fingerprint in the cloud console, then replace the host's line in the node's `%APPDATA%\MCPRelay\known_hosts`. The tunnel reconnects on its own; no app restart is needed.
+2. Apply all OS updates, reboot if required, then run `vps-harden.sh` and `vps-install.sh` as above.
+3. The gateway key, login password and OAuth grants are new. Delete and re-add the ChatGPT connector, then log in with the new password.
+
 Status and logs:
 
 ```bash
@@ -70,7 +77,10 @@ vps-install.sh ... --node <node>:<port>:node_ed25519.pub:bridge.token
 
 Operate the app from the tray icon: green = connected, yellow = starting/connecting, red = stopped/not configured.
 - Closing the window hides it to the tray; **Quit** stops the capability server and the tunnel.
-- Logs: `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log`.
+- Logs (all size-capped, the oldest part is dropped):
+  - `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log` — app, server and tunnel events; rotates at 2 MB into `.1` (≤ 4 MB).
+  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, tool name, ok, duration, error class. No arguments, paths, commands or output. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 13,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
+  - VPS: journald only, capped by `vps-install.sh` at 200 MB / 7 days.
 - File-tool roots default to the user profile. Set `"allowedDirs": "C:\\Users\\me;D:\\work"` in `%APPDATA%\MCPRelay\config.json` to change them, then use Restart services. Shell commands are not confined; they run as the user.
 - Self-healing:
   - the server or tunnel exiting → restarted with backoff;

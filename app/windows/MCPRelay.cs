@@ -28,7 +28,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("MCPRelay")]
 [assembly: System.Reflection.AssemblyProduct("MCPRelay")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0")]
 
 namespace MCPRelay
 {
@@ -444,6 +444,9 @@ namespace MCPRelay
                 psi.WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 psi.EnvironmentVariables["MCPRELAY_BRIDGE_TOKEN"] = File.ReadAllText(Config.TokenPath).Trim();
                 if (config.AllowedDirs != "") psi.EnvironmentVariables["MCPRELAY_ALLOWED_DIRS"] = config.AllowedDirs;
+                psi.EnvironmentVariables["MCPRELAY_NODE_NAME"] = config.NodeName;
+                // Per-call audit trail (no arguments), size-capped by the server (~2 MB).
+                psi.EnvironmentVariables["MCPRELAY_AUDIT_LOG"] = Path.Combine(logDir, "audit.log");
                 return psi;
             }, new[] { 1, 2, 5, 10, 30 });
 
@@ -560,7 +563,7 @@ namespace MCPRelay
                 try
                 {
                     string file = Path.Combine(logDir, "mcprelay.log");
-                    if (File.Exists(file) && new FileInfo(file).Length > 5 * 1024 * 1024)
+                    if (File.Exists(file) && new FileInfo(file).Length > 2 * 1024 * 1024)
                     {
                         string old = file + ".1";
                         if (File.Exists(old)) File.Delete(old);

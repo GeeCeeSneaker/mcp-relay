@@ -27,7 +27,7 @@ import path from 'node:path';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -257,19 +257,52 @@ async function listProcesses({ name, pid, limit = 50 }) {
   return rows.sort((a, b) => b.rss - a.rss).slice(0, max);
 }
 
+// ------------------------------------------------------------ audit log --
+// One JSON line per tool call: time, tool, ok, duration and an error class.
+// Never arguments or results (they can contain secrets or file contents).
+// Size-bounded: rotates at AUDIT_MAX bytes and keeps one old file (<= 2 x AUDIT_MAX).
+const AUDIT = process.env.MCPRELAY_AUDIT_LOG || '';
+const AUDIT_MAX = Number(process.env.MCPRELAY_AUDIT_MAX_BYTES) || 1024 * 1024;
+let auditSize = -1; let auditChain = Promise.resolve();
+function audit(entry) {
+  if (!AUDIT) return;
+  const line = `${JSON.stringify(entry)}\n`;
+  auditChain = auditChain.then(async () => {
+    try {
+      if (auditSize < 0) {
+        await fs.mkdir(path.dirname(AUDIT), { recursive: true });
+        auditSize = await fs.stat(AUDIT).then((s) => s.size, () => 0);
+      }
+      if (auditSize + line.length > AUDIT_MAX) {
+        await fs.rm(`${AUDIT}.1`, { force: true });
+        await fs.rename(AUDIT, `${AUDIT}.1`).catch(() => {});
+        auditSize = 0;
+      }
+      await fs.appendFile(AUDIT, line, 'utf8');
+      auditSize += Buffer.byteLength(line);
+    } catch { /* auditing must never break a call */ }
+  });
+}
+
+// --------------------------------------------- client-facing environment --
+const NODE_NAME = process.env.MCPRELAY_NODE_NAME || hostname();
+const OS_DESC = WIN ? `Windows ${Number(release().split('.')[2] || 0) >= 22000 ? '11' : '10'} ${arch()}` : `${process.platform} ${release()} ${arch()}`;
+const FILE_NOTE = ` [Node "${NODE_NAME}", ${OS_DESC}. File tools only work inside: ${ALLOWED.join('; ')}]`;
+const SHELL_NOTE = ` [Node "${NODE_NAME}", ${OS_DESC}. Default shell: ${WIN ? 'Windows PowerShell, UTF-8 output' : (process.env.SHELL || '/bin/sh')}; working directory: ${homedir()}. Commands run with the user's full rights and are NOT limited to the file roots]`;
+
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = { type: 'string' }; const num = { type: 'number' };
 const TOOLS = {
-  node_status: { d: 'Status of this MCPRelay node runtime: version, PID, uptime, host, OS, allowed file roots and process-session counts. Contains no credentials.', s: P({}), ro: true,
+  node_status: { d: 'Status of this MCPRelay node runtime: version, PID, uptime, host, OS, allowed file roots and process-session counts. Contains no credentials.', s: P({}),
     run: async () => text(JSON.stringify({
-      server_version: VERSION, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
+      server_version: VERSION, node_name: NODE_NAME, pid: process.pid, uptime_seconds: Math.round((Date.now() - STARTED_AT) / 1000),
       hostname: hostname(), os: `${process.platform} ${release()}`, arch: arch(), node_version: process.version,
-      allowed_dirs: ALLOWED, sessions: sessions.size, running_sessions: running(),
+      allowed_dirs: ALLOWED, sessions: sessions.size, running_sessions: running(), audit_log: AUDIT || null, audit_max_bytes: AUDIT ? AUDIT_MAX : null,
     }, null, 2)) },
-  list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']), ro: true,
+  list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']),
     run: async (a) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10))).join('\n') || '(empty directory)') },
-  read_file: { d: 'Read a UTF-8 text file by lines. offset >= 0: first line (0-based); offset < 0: the last |offset| lines (tail, e.g. -50 for logs). length: max lines (default 1000).', s: P({ path: str, offset: num, length: num }, ['path']), ro: true,
+  read_file: { d: 'Read a UTF-8 text file by lines. offset >= 0: first line (0-based); offset < 0: the last |offset| lines (tail, e.g. -50 for logs). length: max lines (default 1000).', s: P({ path: str, offset: num, length: num }, ['path']),
     run: async (a) => {
       const p = await allowedPath(a.path); const st = await fs.stat(p);
       if (st.isDirectory()) return text(`${a.path} is a directory; use list_directory`, true);
@@ -308,16 +341,16 @@ const TOOLS = {
     run: async (a) => { await fs.rename(await allowedPath(a.source), await allowedPath(a.destination)); return text(`Moved ${a.source} -> ${a.destination}`); } },
   remove_path: { d: 'Delete a file, an empty directory, or (recursive=true) a directory with its contents. Only inside the allowed roots; never an allowed root itself. Links are removed without touching their targets.', s: P({ path: str, recursive: { type: 'boolean' } }, ['path']),
     run: async (a) => removePath(a.path, a.recursive === true) },
-  get_file_info: { d: 'File or directory metadata; sha256=true adds the file\'s SHA-256.', s: P({ path: str, sha256: { type: 'boolean' } }, ['path']), ro: true,
+  get_file_info: { d: 'File or directory metadata; sha256=true adds the file\'s SHA-256.', s: P({ path: str, sha256: { type: 'boolean' } }, ['path']),
     run: async (a) => { const p = await allowedPath(a.path); const st = await fs.stat(p);
       const info = { size: st.size, type: st.isDirectory() ? 'directory' : 'file', modified: st.mtime, created: st.birthtime };
       if (a.sha256 === true && !st.isDirectory()) info.sha256 = await sha256File(p);
       return text(JSON.stringify(info, null, 2)); } },
-  search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links are not followed.', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']), ro: true,
+  search_files: { d: 'Search files under path by file-name glob (pattern, e.g. *.ts) and/or case-insensitive text (content_pattern). Symbolic links are not followed.', s: P({ path: str, pattern: str, content_pattern: str, max_results: num }, ['path']),
     run: async (a) => { const hits = await searchFiles(await allowedPath(a.path), a.pattern, a.content_pattern, Math.min(a.max_results ?? 100, 1000)); return text(hits.join('\n') || 'No matches.'); } },
   start_process: { d: 'Run a shell command (PowerShell on Windows by default; shell: "cmd.exe" for cmd). Returns when the command exits, its output goes quiet, or after timeout_ms; long-running processes keep running and are addressed by PID.', s: P({ command: str, timeout_ms: num, shell: str }, ['command', 'timeout_ms']),
     run: startProcess },
-  read_process_output: { d: 'Read new output of a process started with start_process (waits up to timeout_ms for new output).', s: P({ pid: num, timeout_ms: num }, ['pid']), ro: true,
+  read_process_output: { d: 'Read new output of a process started with start_process (waits up to timeout_ms for new output).', s: P({ pid: num, timeout_ms: num }, ['pid']),
     run: async (a) => { const s = sessions.get(a.pid); if (!s) return text(`No session found for PID ${a.pid}`, true);
       await waitQuiet(s, Math.min(a.timeout_ms ?? 5000, 60_000)); const out = takeOutput(s);
       return text(`${out || '(no new output)'}${s.exitCode === null ? '' : `\nProcess finished with exit code ${s.exitCode}.`}`); } },
@@ -328,21 +361,57 @@ const TOOLS = {
   force_terminate: { d: 'Terminate a process started with start_process, including its child processes.', s: P({ pid: num }, ['pid']),
     run: async (a) => { const s = sessions.get(a.pid); if (!s || s.exitCode !== null) return text(`No active session found for PID ${a.pid}`, true);
       await killTree(a.pid); return text(`Terminated process ${a.pid}`); } },
-  list_sessions: { d: 'List processes started with start_process.', s: P({}), ro: true,
+  list_sessions: { d: 'List processes started with start_process.', s: P({}),
     run: async () => text([...sessions.entries()].map(([pid, s]) => `PID: ${pid}, ${s.exitCode === null ? 'running' : `exited (${s.exitCode})`}, runtime: ${Math.round((Date.now() - s.started) / 1000)}s`).join('\n') || 'No sessions.') },
-  list_processes: { d: 'List system processes (read-only), largest memory first: pid, parent_pid, name, path, start_time, cpu_time (s), rss (bytes). Filter by name (substring) or pid; limit (default 50, max 500). Command lines are not returned.', s: P({ name: str, pid: num, limit: num }), ro: true,
+  list_processes: { d: 'List system processes (read-only), largest memory first: pid, parent_pid, name, path, start_time, cpu_time (s), rss (bytes). Filter by name (substring) or pid; limit (default 50, max 500). Command lines are not returned.', s: P({ name: str, pid: num, limit: num }),
     run: async (a) => { const rows = await listProcesses(a); return text(rows.length ? JSON.stringify(rows, null, 1) : 'No matching processes.'); } },
 };
-const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.d, inputSchema: t.s, annotations: { readOnlyHint: !!t.ro } }));
+// MCP ToolAnnotations let clients (e.g. ChatGPT) tell reads from risky actions
+// and ask the user before destructive ones. kind: r = read-only,
+// w = writes but never destroys, d = may destroy/overwrite data or run code.
+const META = {
+  //                     title                      kind idempotent openWorld note
+  node_status:           ['Node status',            'r', true,  false, ' Call it first to learn this node\'s environment.'],
+  list_directory:        ['List directory',         'r', true,  false, FILE_NOTE],
+  read_file:             ['Read file',              'r', true,  false, FILE_NOTE],
+  write_file:            ['Write file',             'd', false, false, FILE_NOTE],
+  edit_block:            ['Edit file',              'd', false, false, FILE_NOTE],
+  create_directory:      ['Create directory',       'w', true,  false, FILE_NOTE],
+  move_file:             ['Move or rename',         'd', false, false, FILE_NOTE],
+  remove_path:           ['Delete file or folder',  'd', false, false, FILE_NOTE],
+  get_file_info:         ['File info / SHA-256',    'r', true,  false, FILE_NOTE],
+  search_files:          ['Search files',           'r', true,  false, FILE_NOTE],
+  start_process:         ['Run command',            'd', false, true,  SHELL_NOTE],
+  read_process_output:   ['Read process output',    'r', false, false, ''],
+  interact_with_process: ['Send input to process',  'd', false, true,  ''],
+  force_terminate:       ['Terminate process',      'd', true,  false, ''],
+  list_sessions:         ['List command sessions',  'r', true,  false, ''],
+  list_processes:        ['List system processes',  'r', true,  false, ''],
+};
+const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => {
+  const [title, kind, idempotent, openWorld, note] = META[name];
+  return {
+    name, title, description: t.d + note, inputSchema: t.s,
+    annotations: { title, readOnlyHint: kind === 'r', destructiveHint: kind === 'd', idempotentHint: idempotent, openWorldHint: openWorld },
+  };
+});
 
 function mcpServer() {
   const server = new Server({ name: 'mcprelay-node', version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler('tools/list', async () => ({ tools: TOOL_LIST }));
   server.setRequestHandler('tools/call', async (req) => {
-    const t = TOOLS[req.params.name];
-    if (!t) throw new ProtocolError(-32602, `Unknown tool: ${req.params.name}`);
-    try { return await withTimeout(t.run(req.params.arguments || {}), CALL_TIMEOUT_MS, req.params.name); }
-    catch (e) { if (e instanceof ProtocolError) throw e; return text(`Error: ${e.message}`, true); }
+    const name = req.params.name; const t = TOOLS[name]; const started = Date.now();
+    const done = (ok, err) => audit({ t: new Date(started).toISOString(), tool: name, ok, ms: Date.now() - started, ...(err ? { err } : {}) });
+    if (!t) { done(false, 'unknown_tool'); throw new ProtocolError(-32602, `Unknown tool: ${name}`); }
+    try {
+      const result = await withTimeout(t.run(req.params.arguments || {}), CALL_TIMEOUT_MS, name);
+      done(!result.isError, result.isError ? 'tool_error' : undefined);
+      return result;
+    } catch (e) {
+      if (e instanceof ProtocolError) { done(false, 'invalid_params'); throw e; }
+      done(false, /timed out after/.test(e.message) ? 'timeout' : 'exception');
+      return text(`Error: ${e.message}`, true);
+    }
   });
   return server;
 }
@@ -381,6 +450,6 @@ process.on('uncaughtException', (e) => { log('uncaught exception, exiting for a 
 
 http.on('error', (e) => { log('listen error:', e.message); process.exit(1); }); // e.g. port busy -> supervisor retries
 http.listen(Number(opt.port), opt.host, () => {
-  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}`);
+  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}; audit log: ${AUDIT || 'off'}`);
   if (!TOKEN_DIGEST) log('WARNING: MCPRELAY_BRIDGE_TOKEN not set; /mcp accepts unauthenticated local requests');
 });

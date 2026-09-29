@@ -322,6 +322,48 @@ await check('remove_path removes a link, never its target; recursive delete does
   await run(opt.os === 'windows' ? `Remove-Item -Recurse -Force '${outsideDir}'` : `rm -rf '${outsideDir}'`);
 });
 
+// --- v1.2: annotations, environment context, audit log ---
+await check('tools carry titles and risk annotations', async () => {
+  const { tools } = await b.listTools();
+  const by = Object.fromEntries(tools.map((t) => [t.name, t]));
+  const ann = (n) => by[tool(n)]?.annotations || {};
+  for (const n of REQUIRED_TOOLS) expect(ann(n).title && typeof ann(n).readOnlyHint === 'boolean', `no annotations on ${n}`);
+  expect(ann('remove_path').destructiveHint === true && ann('remove_path').readOnlyHint === false, 'remove_path must be destructive');
+  expect(ann('read_file').readOnlyHint === true && ann('read_file').destructiveHint === false, 'read_file must be read-only');
+  expect(ann('start_process').destructiveHint === true && ann('start_process').openWorldHint === true, 'start_process must be destructive/open-world');
+  expect(ann('create_directory').readOnlyHint === false && ann('create_directory').destructiveHint === false, 'create_directory is a non-destructive write');
+});
+
+await check('tool descriptions carry the node environment', async () => {
+  const { tools } = await b.listTools();
+  const d = (n) => tools.find((t) => t.name === tool(n))?.description || '';
+  expect(d('list_directory').includes(status.allowed_dirs[0]), `allowed root missing: ${brief(d('list_directory'))}`);
+  expect(/Default shell/.test(d('start_process')) && /full rights/.test(d('start_process')), `shell context missing: ${brief(d('start_process'))}`);
+});
+
+await check('audit log records calls without arguments and stays within its cap', async () => {
+  const st = J(await call(b, 'node_status', {}));
+  if (!st.audit_log) return 'audit log disabled on this node (skipped)';
+  const inside = st.allowed_dirs.some((r) => st.audit_log.toLowerCase().startsWith(r.toLowerCase()));
+  if (!inside) return 'audit log outside file roots (skipped)';
+  await sleep(300); // audit writes are asynchronous
+  // The newest entries may sit in the rotated file if the log just rolled over.
+  let text = '';
+  for (const p of [`${st.audit_log}.1`, st.audit_log]) {
+    const r = await call(b, 'read_file', { path: p, offset: -40 });
+    if (!r.isError) text += `${r.text.split('\n\n').slice(1).join('\n\n')}\n`;
+  }
+  const lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  expect(lines.length > 0 && lines.every((e) => e.t && e.tool && typeof e.ok === 'boolean' && typeof e.ms === 'number'), brief(text));
+  expect(lines.some((e) => e.tool === 'node_status'), 'the node_status call just made is not in the audit log');
+  const allowedKeys = new Set(['t', 'tool', 'ok', 'ms', 'err']);
+  expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), 'unexpected fields in audit entries');
+  expect(!text.includes(opt.fixture) && !text.includes('mcp-relay-ok'), 'arguments/results leaked into the audit log');
+  const size = J(await call(b, 'get_file_info', { path: st.audit_log })).size;
+  expect(size <= st.audit_max_bytes, `audit log ${size} > cap ${st.audit_max_bytes}`);
+  return `${lines.length} recent entries, ${size} bytes (cap ${st.audit_max_bytes})`;
+});
+
 if (opt['destructive-ok']) {
   await check('remove_path refuses the allowed root itself (scratch roots only)', async () => {
     const root = status.allowed_dirs[0];
