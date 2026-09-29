@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-09-29 — T8 power cycle passed
+
+- The Owner shut the PC down from the Start menu and powered it on (Windows Fast Startup, boot type 0x1). At logon the tray app autostarted hidden. The server and tunnel were up within 1 s, and the tunnel re-authenticated at the VPS with no manual step.
+- Public OAuth + MCP checks passed after the power cycle.
+- The interrupted reinstall was completed, so the installed server now matches `main` (4d3c179).
+- Still open: a deliberate ≥ 60 s network outage (T7) and sleep/resume (T9).
+
 ## 2026-09-29 — Node server v1.1.0: 17-tool set
 
 - Implemented the Owner's proposal:

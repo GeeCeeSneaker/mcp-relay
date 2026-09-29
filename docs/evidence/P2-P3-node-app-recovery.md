@@ -35,7 +35,15 @@ All cases are well under the 60 s target.
 
 Pending, needs the Owner:
 - **T7 network outage:** not run by the development agent, because it required a temporary firewall change on a shared host.
-- **T8 Windows reboot** and **T9 sleep/resume**.
+  - Partially observed on 2026-09-29: an unplanned network-path reset dropped every SSH connection from the node's IP.
+  - The tunnel was back in 2 s and no call failed (`P2-reliability-and-resources-2026-09-29.md`).
+  - A deliberate ≥ 60 s outage is still open.
+- **T9 sleep/resume:** still open.
+
+**T8 Windows power cycle — PASS (2026-09-29, Owner-initiated, node server 1.1.0).**
+- Shutdown was started from the Start menu. On power-on, Windows used Fast Startup (event 27, boot type 0x1).
+- At logon the tray app was started hidden by the `HKCU\...\Run` entry. The server and tunnel came up within 1 s, and the tunnel authenticated at the VPS 1 s after the app started.
+- Nothing was done by hand. Afterwards, public OAuth + MCP checks passed and the node answered through the tunnel.
 
 Expected behavior for these:
 - Dead connections are detected by `ServerAliveInterval 15 × 3` on the node and `ClientAliveInterval 15 × 3` on the VPS, which frees the stale listener in ≤ ~45 s.
