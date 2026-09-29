@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-29 — Node server v1.2.0 and ingress host rebuild
+
+- Tools describe themselves:
+  - environment notes in descriptions (roots, shell, full-rights warning);
+  - titles and MCP risk annotations (read-only / destructive / open-world).
+- A call audit log (tool name, ok, duration, error class; never arguments) rotates at 1 MiB, so it stays ≤ 2 MiB. The tray app log cap dropped to 2 MB. VPS journald is capped at 200 MB / 7 days.
+- The Owner reinstalled the VPS on a supported LTS OS. The VPS scripts now handle Debian/Ubuntu as well as RHEL-family hosts, and the host was rebuilt from the RUNBOOK. The ChatGPT connector must be re-added (new gateway secrets).
+- Evidence: `docs/evidence/P2-tools-v1.2-and-host-rebuild-2026-09-29.md`.
+
 ## 2026-09-29 — T8 power cycle passed
 
 - The Owner shut the PC down from the Start menu and powered it on (Windows Fast Startup, boot type 0x1). At logon the tray app autostarted hidden. The server and tunnel were up within 1 s, and the tunnel re-authenticated at the VPS with no manual step.
