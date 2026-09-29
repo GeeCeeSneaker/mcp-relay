@@ -18,6 +18,7 @@ const call = async (name, args) => {
   return { isError: !!r.isError, text: (r.content || []).map((x) => x.text || '').join('\n') };
 };
 const pidOf = (t) => Number((/PID\s+(\d+)/.exec(t) || [])[1]);
+const handleOf = (t) => (/handle (p_[\w-]+)/.exec(t) || [])[1];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
 async function check(name, fn) {
@@ -49,23 +50,23 @@ await check('Chinese file name + content round trip', async () => {
 });
 await check('large output (20k lines) readable', async () => {
   const r = await call('start_process', { command: '1..20000 | ForEach-Object { "line $_" }', timeout_ms: 30000, shell: 'powershell.exe' });
-  const pid = pidOf(r.text); let all = r.text;
-  for (let i = 0; i < 10 && !/line 20000/.test(all); i++) all += (await call('read_process_output', { pid, timeout_ms: 2000 })).text;
+  const handle = handleOf(r.text); let all = r.text;
+  for (let i = 0; i < 10 && !/line 20000/.test(all); i++) all += (await call('read_process_output', { handle, timeout_ms: 2000 })).text;
   expect(/line 20000/.test(all) || /line 1999\d/.test(all), `tail missing (got ${all.length} chars)`);
   return `${all.length} chars`;
 });
 await check('interactive REPL (node -i)', async () => {
   const r = await call('start_process', { command: 'node -i', timeout_ms: 3000 });
-  const pid = pidOf(r.text); expect(pid, r.text);
-  const out = await call('interact_with_process', { pid, input: '6*7', timeout_ms: 8000 });
-  await call('force_terminate', { pid });
+  const handle = handleOf(r.text); expect(handle, r.text);
+  const out = await call('interact_with_process', { handle, input: '6*7', timeout_ms: 8000 });
+  await call('force_terminate', { handle });
   expect(/42/.test(out.text), JSON.stringify(out.text.slice(0, 200)));
 });
 await check('force_terminate kills the child tree', async () => {
   const r = await call('start_process', { command: 'ping -n 120 127.0.0.1', timeout_ms: 2000, shell: 'powershell.exe' });
-  const pid = pidOf(r.text); expect(pid, r.text);
+  const pid = pidOf(r.text); const handle = handleOf(r.text); expect(pid && handle, r.text);
   const before = await call('start_process', { command: 'Get-CimInstance Win32_Process -Filter "Name=\'PING.EXE\'" | Measure-Object | Select-Object -ExpandProperty Count', timeout_ms: 15000, shell: 'powershell.exe' });
-  await call('force_terminate', { pid }); await sleep(1500);
+  await call('force_terminate', { handle }); await sleep(1500);
   const after = await call('start_process', { command: 'Get-CimInstance Win32_Process -Filter "Name=\'PING.EXE\'" | Measure-Object | Select-Object -ExpandProperty Count', timeout_ms: 15000, shell: 'powershell.exe' });
   const n = (r) => Number((r.text.match(/Initial output:\s*(\d+)/) || [])[1] ?? NaN);
   expect(n(after) < n(before), `ping.exe count before ${n(before)}, after ${n(after)}`);

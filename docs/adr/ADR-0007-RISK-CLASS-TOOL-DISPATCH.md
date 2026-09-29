@@ -43,3 +43,22 @@ Rules:
 
 - **A single generic `invoke` tool**: it would carry the most dangerous class's annotations, so every read would need a confirmation.
 - **Keeping the 16 direct tools next to the class tools**: this doubles the tool count and gives the model two ways to do the same thing.
+
+## Update 2026-09-29 — v2.2.0 (agent-facing contract)
+
+- **Process handles.** `start_process` returns a PID and an opaque `handle`. `read_process_output`, `interact_with_process` and `force_terminate` require the handle; a PID is refused as an unknown argument. `list_sessions` shows PIDs only.
+  - Reading output consumes it, so the handle also keeps one agent from taking another's output.
+  - Handles work across connections.
+  - This is operational safety between agents of the same user, not an access-control boundary.
+- **Error codes.** Every failure returns `Error [<code>]: <message> (next: <action>)` plus `_meta["io.mcprelay/error"] = {code, action}`. The action is one of:
+  - `fix_args`: change the arguments and retry;
+  - `ask_user`: stop and ask the user (`protected_path`, `read_only_path`, `permission_denied`);
+  - `retry_later` (`timeout`, `busy`);
+  - `stop` (`internal_error`).
+
+  The table is in the catalog (`errors.codes`), and audit `err` uses the same codes.
+- **`catalog_version`** hashes the complete catalog, so it is identical for every filtered view. `view` names the returned subset.
+- **Correlation.** Each result carries `_meta["io.mcprelay/call_id"] = <boot_id>-<call_id>`. Audit lines add `boot`, `call` and, for process operations, `pid`. Arguments and results are still never logged.
+- **Cancellation.** Calls pass an AbortSignal that fires at the 120 s bound.
+  - `search_files` and `list_directory` also have their own budgets (60 s / 30 s, plus 200 000 entries for search). At the budget they stop and return partial results marked `[partial: …]` instead of timing out.
+  - Hashing stops reading when the call is aborted.

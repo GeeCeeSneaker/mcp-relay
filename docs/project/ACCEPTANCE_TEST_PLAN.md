@@ -6,13 +6,18 @@ This plan defines durable behavioral acceptance. Exact commands may evolve with 
 
 Pass when, on the node without tunnel/gateway:
 - MCP initialize/handshake succeeds;
-- `tools/list` returns the required tools (DC-compatible names);
+- `tools/list` returns exactly the fixed risk-class tools (ADR-0007): `list_capabilities`, `invoke_read`, `invoke_write`, `invoke_destructive`, `invoke_exec`, each with its class's MCP annotations (read-only / non-destructive write / destructive / destructive + open-world);
+- `list_capabilities` returns the capability catalog: every required capability (DC-compatible names: `list_directory`, `read_file`, `start_process`, …) with its class, `invoke_with`, description and argument schema; the node environment (file roots, guard lists, shells); the error-code table; one `catalog_version` for the complete catalog, identical for every filtered `view`;
+- all capability calls below go through `invoke_<class>({capability, args})`. A capability is refused through another class's tool (`wrong_class`, nothing runs), and invalid arguments are refused with the schema (`invalid_args`);
+- failures return `Error [<code>]: … (next: <action>)` with a stable code from the catalog's table;
 - directory listing succeeds on a dedicated test fixture;
 - file read succeeds;
 - controlled file create/edit/write succeeds;
 - deterministic command returns `mcp-relay-ok`;
-- a long-running process can be started, and its output observed and terminated;
-- **state persistence:** a process started in one HTTP request/session can be read and terminated from a *separate* client connection/session;
+- a long-running process can be started, and its output observed and terminated; process operations require the opaque `handle` returned by `start_process` (not a PID), and `list_sessions` never shows handles;
+- **state persistence:** a process started in one HTTP request/session can be read and terminated, with its handle, from a *separate* client connection/session;
+- file guard lists hold: protected paths are never read, listed, searched or changed; read-only paths are readable but never changed;
+- the audit log records one line per call (ids, capability, class, ok, duration, PID for process operations, error code), never arguments or results, and stays within its size cap;
 - repeated sequential calls remain valid;
 - all of the above pass in **both protocol generations** (2025 handshake and 2026-07-28);
 - requests without the bearer token are rejected, and commands cannot read the token;

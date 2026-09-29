@@ -120,10 +120,10 @@ const brief = (s) => JSON.stringify(s.length > 160 ? `${s.slice(0, 160)}…` : s
 // Poll read_process_output until new "tick" output appears. Slow hosts (CI
 // Windows runners) can return only an empty line at first. Lost state shows up
 // as "No session found" and fails immediately.
-async function readTicks(client, pid) {
+async function readTicks(client, handle) {
   let last = '';
   for (let i = 0; i < 5; i++) {
-    const r = await call(client, 'read_process_output', { pid, timeout_ms: 2000 });
+    const r = await call(client, 'read_process_output', { handle, timeout_ms: 2000 });
     expect(!r.isError && !/No session found/i.test(r.text), brief(r.text));
     if (/tick \d+/.test(r.text)) return;
     last = r.text;
@@ -145,6 +145,7 @@ if (opt['token-env']) {
 // --- session A -------------------------------------------------------------
 let a;
 let pid;
+let handle;
 const initOk = await check('initialize', async () => {
   a = await connect();
   const v = a.getServerVersion();
@@ -221,13 +222,15 @@ await check('start long-running process', async () => {
   const m = r.text.match(/PID\s+(\d+)/);
   expect(m, `no PID in ${brief(r.text)}`);
   pid = Number(m[1]);
-  return `pid ${pid}`;
+  handle = (r.text.match(/handle (p_[\w-]+)/) || [])[1];
+  expect(handle, `no handle in ${brief(r.text)}`);
+  return `pid ${pid}, handle ${handle}`;
 });
 
 await check('read long-running output (same session)', async () => {
   expect(pid, 'no pid');
   await sleep(1500);
-  await readTicks(a, pid);
+  await readTicks(a, handle);
 });
 
 await check('20 repeated sequential calls stay valid', async () => {
@@ -248,12 +251,12 @@ await check('second independent client connects', async () => {
 await check('process from first connection is visible from second connection', async () => {
   expect(pid && b, 'no pid or client');
   await sleep(1500);
-  await readTicks(b, pid);
+  await readTicks(b, handle);
 });
 
 await check('terminate process from second connection', async () => {
   expect(pid && b, 'no pid or client');
-  const r = await call(b, 'force_terminate', { pid });
+  const r = await call(b, 'force_terminate', { handle });
   expect(!r.isError && !/No (active )?session found/i.test(r.text), brief(r.text));
 });
 
@@ -410,7 +413,7 @@ await check('protected paths are neither read, listed, searched nor changed', as
     ? `New-Item -ItemType Directory -Force '${prot}' | Out-Null; if (-not (Test-Path '${secret}')) { Set-Content -Path '${secret}' -Value guard-secret-xyz }`
     : `mkdir -p '${prot}' && [ -e '${secret}' ] || echo guard-secret-xyz > '${secret}'`);
   const rd = await call(b, 'read_file', { path: secret });
-  expect(rd.isError && /Protected path/.test(rd.text), `read: ${brief(rd.text)}`);
+  expect(rd.isError && /^Error \[protected_path]: Protected path/.test(rd.text), `read: ${brief(rd.text)}`);
   const wr = await call(b, 'write_file', { path: secret, content: 'x' });
   expect(wr.isError && /Protected path/.test(wr.text), `write: ${brief(wr.text)}`);
   const ls = await call(b, 'list_directory', { path: prot });
@@ -438,7 +441,7 @@ await check('read-only paths are readable but never changed', async () => {
   for (const [cap, args] of [['write_file', { path: f, content: 'x' }], ['edit_block', { file_path: f, old_string: 'ro-ok', new_string: 'x' }],
     ['create_directory', { path: `${ro}${sep}sub` }], ['remove_path', { path: f }], ['move_file', { source: f, destination: `${opt.fixture}${sep}moved.txt` }]]) {
     const r = await call(b, cap, args);
-    expect(r.isError && /Read-only path/.test(r.text), `${cap}: ${brief(r.text)}`);
+    expect(r.isError && /^Error \[read_only_path]: Read-only path/.test(r.text), `${cap}: ${brief(r.text)}`);
   }
   expect((await call(b, 'read_file', { path: f })).text.includes('ro-ok'), 'read-only file changed!');
   // A folder holding a guarded folder can be neither removed nor moved.
@@ -451,6 +454,51 @@ await check('read-only paths are readable but never changed', async () => {
   }
   await run(opt.os === 'windows' ? `Remove-Item -Force '${f}'` : `rm -f '${f}'`);
   return ro;
+});
+
+// --- v2.2: process handles, error codes, catalog_version, cancellable search ---
+await check('process operations need the start_process handle, not a PID', async () => {
+  const r = await call(b, 'start_process', { ...LONG_RUNNING, timeout_ms: 2000 });
+  const h = (r.text.match(/handle (p_[\w-]+)/) || [])[1]; const p = Number((r.text.match(/PID\s+(\d+)/) || [])[1]);
+  expect(h && p, brief(r.text));
+  const byPid = await call(b, 'read_process_output', { pid: p });
+  expect(byPid.isError && /\[invalid_args\]/.test(byPid.text) && /unknown argument "pid"/.test(byPid.text), `pid accepted: ${brief(byPid.text)}`);
+  const wrong = await call(b, 'force_terminate', { handle: 'p_notarealhandle0' });
+  expect(wrong.isError && /\[bad_handle\]/.test(wrong.text), `bad handle: ${brief(wrong.text)}`);
+  const ls = await call(b, 'list_sessions', {});
+  expect(ls.text.includes(`PID: ${p}`) && !ls.text.includes(h), `list_sessions leaks handles: ${brief(ls.text)}`);
+  const k = await call(b, 'force_terminate', { handle: h });
+  expect(!k.isError, brief(k.text));
+  await sleep(1000);
+  const again = await call(b, 'interact_with_process', { handle: h, input: 'x' });
+  expect(again.isError && /\[process_exited\]/.test(again.text), `after terminate: ${brief(again.text)}`);
+});
+
+await check('failures carry stable error codes and a next action', async () => {
+  const cases = [
+    ['read_file', { path: opt.os === 'windows' ? 'C:\\Windows\\win.ini' : '/etc/hostname' }, 'path_not_allowed', 'fix the arguments'],
+    ['read_file', { path: `${opt.fixture}${sep}no-such-file.txt` }, 'not_found', 'fix the arguments'],
+    ['read_file', { path: opt.fixture }, 'is_a_directory', 'fix the arguments'],
+    ['edit_block', { file_path: fixtureFile, old_string: 'not-in-file-xyz', new_string: 'y' }, 'no_match', 'fix the arguments'],
+  ];
+  for (const [cap, args, code, next] of cases) {
+    const r = await call(b, cap, args);
+    expect(r.isError && r.text.startsWith(`Error [${code}]`) && r.text.includes(`next: ${next}`), `${cap}: ${brief(r.text)}`);
+  }
+  const c = await catalog(b);
+  expect(c.errors?.codes?.protected_path === 'ask_user' && c.errors.codes.timeout === 'retry_later', 'error codes missing from the catalog');
+});
+
+await check('catalog_version is the same for every filtered view', async () => {
+  const views = [];
+  for (const cls of [undefined, 'read', 'write', 'destructive', 'exec']) {
+    const res = await b.callTool({ name: tool('list_capabilities'), arguments: cls ? { class: cls } : {} });
+    const v = JSON.parse(res.content[0].text);
+    expect(v.view === (cls || 'all') && v.capabilities.every((x) => !cls || x.class === cls), `view ${cls}`);
+    views.push(v.catalog_version);
+  }
+  expect(new Set(views).size === 1, `versions differ: ${views.join(', ')}`);
+  return views[0];
 });
 
 await check('default shell is the one the catalog advertises', async () => {
@@ -478,7 +526,9 @@ await check('audit log records calls without arguments and stays within its cap'
   expect(lines.length > 0 && lines.every((e) => e.t && e.tool && typeof e.ok === 'boolean' && typeof e.ms === 'number'), brief(text));
   expect(lines.some((e) => e.tool === 'node_status'), 'the node_status call just made is not in the audit log');
   expect(lines.some((e) => e.tool === 'remove_path' && e.cls === 'read' && e.err === 'wrong_class'), 'refused cross-class call not audited');
-  const allowedKeys = new Set(['t', 'tool', 'cls', 'ok', 'ms', 'err']);
+  expect(lines.every((e) => /^[0-9a-f]{8}$/.test(e.boot) && /^[0-9a-f]{8}$/.test(e.call)), 'boot/call ids missing');
+  expect(lines.some((e) => e.tool === 'start_process' && Number.isInteger(e.pid)), 'process calls must record the PID');
+  const allowedKeys = new Set(['t', 'boot', 'call', 'tool', 'cls', 'ok', 'ms', 'pid', 'err']);
   expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), 'unexpected fields in audit entries');
   expect(!text.includes(opt.fixture) && !text.includes('mcp-relay-ok'), 'arguments/results leaked into the audit log');
   const size = J(await call(b, 'get_file_info', { path: st.audit_log })).size;
