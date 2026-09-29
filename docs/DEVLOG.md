@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-29 — Node server v2.3.0: re-read the catalog on failure
+
+- Owner request: tell calling agents that capabilities can change, and to re-read `list_capabilities` when a call fails.
+- New next action `refresh_catalog` for `unknown_capability`, `wrong_class` and `invalid_args`.
+- Every error carries the current `catalog_version`, and the catalog's usage text states that capabilities can change. No ChatGPT refresh is needed; the fixed tools' descriptions carry the same notice from the next refresh on.
+
 ## 2026-09-29 — T7 and T9 observed in real use; WO-0002 done
 
 - **T7:** the node's network path failed for ~2 h 40 min. The tunnel retried with capped backoff and re-authenticated on its own once the path worked. The VPS logs show no attempt from the node in that window, so the fault was on the node's network side.
