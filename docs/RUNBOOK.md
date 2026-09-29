@@ -81,7 +81,12 @@ Operate the app from the tray icon: green = connected, yellow = starting/connect
   - `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log` — app, server and tunnel events; rotates at 2 MB into `.1` (≤ 4 MB).
   - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, tool name, ok, duration, error class. No arguments, paths, commands or output. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 13,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
   - VPS: journald only, capped by `vps-install.sh` at 200 MB / 7 days.
-- File-tool roots default to the user profile. Set `"allowedDirs": "C:\\Users\\me;D:\\work"` in `%APPDATA%\MCPRelay\config.json` to change them, then use Restart services. Shell commands are not confined; they run as the user.
+- File capabilities work only inside the roots, `allowedDirs` in `%APPDATA%\MCPRelay\config.json`. The default is the user profile; the Owner's node uses `"%USERPROFILE%;D:\\"`. Restart services after changing it. The installer keeps these settings.
+- Two guard lists apply inside the roots (list them with `list_capabilities`):
+  - **protected** (never read, listed, searched or changed): `%APPDATA%\MCPRelay` (token, key, config), `~\.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, Windows credential/DPAPI stores, and browser profiles;
+  - **read-only**: Windows, Program Files, ProgramData, `<drive>:\$Recycle.Bin`, `System Volume Information`, `Recovery`, and MCPRelay's program and logs.
+  - Add folders with `protectedDirs` / `readOnlyDirs` (`;`-separated) in config.json.
+- Roots and guard lists are a guardrail against mistakes, **not a security boundary**. Shell commands (`invoke_exec`) run with the user's full rights. Your confirmation of exec/destructive calls in ChatGPT is the control.
 - Self-healing:
   - the server or tunnel exiting → restarted with backoff;
   - the server not answering 3 health checks → restarted;

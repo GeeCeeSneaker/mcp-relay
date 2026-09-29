@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-09-29 — Node server v2.1.0: guard lists; wider file roots
+
+- **Owner decision:** file roots = user profile + the whole data drive, and system folders get a denylist.
+- Guard lists apply inside the roots:
+  - **protected** (never read or changed): MCPRelay credentials/config, SSH/GPG/cloud keys, OS and browser credential stores;
+  - **read-only**: system folders, per-drive system entries, MCPRelay's program, logs and code.
+- Both lists are extensible via config. Roots and lists are documented as a guardrail, not a security boundary: exec keeps full user rights.
+- Fixed: `install.ps1` dropped Owner settings such as `allowedDirs` on reinstall; it now merges them. Tray app 1.2.0.
+- Evidence: `docs/evidence/P2-node-2.1-guard-lists-2026-09-29.md`.
+
 ## 2026-09-29 — Node server v2.0.0: fixed risk-class tools (ADR-0007)
 
 - Owner proposal adopted. Clients now see five fixed tools: `list_capabilities` plus `invoke_read`, `invoke_write`, `invoke_destructive` and `invoke_exec`, each carrying its class's MCP annotations.

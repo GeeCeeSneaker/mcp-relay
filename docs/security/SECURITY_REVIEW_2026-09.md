@@ -55,7 +55,7 @@ Desktop Commander and the bridge were replaced by the project-owned `node-runtim
 
 ## Residual risk classes
 
-1. **Real-identity operation.** ChatGPT can run any command as the Owner. `allowedDirectories` limits file tools, not the shell. Prompt injection is the main practical risk. Mitigate operationally: disable the connector when not in use, avoid "always allow" for write/exec tools, and optionally use DC `blockedCommands`.
+1. **Real-identity operation.** ChatGPT can run any command as the Owner. File roots and guard lists (node 2.1.0: protected credential/config folders, read-only system folders) limit file capabilities only, not the shell; they are a guardrail, not a boundary. Prompt injection is the main practical risk. Mitigate operationally: disable the connector when not in use, avoid "always allow" for write/exec tools, and optionally use DC `blockedCommands`.
 2. **Ingress host platform.** A host OS without vendor security updates can only be mitigated, not fixed. A supported OS is a P6 release condition.
 3. **Co-hosted services.** Other root services on the ingress host are inside the gateway's trust boundary.
 4. **Third-party components.** The gateway (single maintainer, pinned commit) and Desktop Commander's dependency tree are pinned. Review diffs before upgrading.

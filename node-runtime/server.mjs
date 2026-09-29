@@ -26,10 +26,11 @@ import { parseArgs } from 'node:util';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -54,8 +55,54 @@ const authorized = (req) => {
 };
 
 // ------------------------------------------------------------ path policy --
+// File capabilities work only inside ALLOWED. This is a guardrail against
+// mistakes, not a security boundary: exec capabilities run with the user's full
+// rights. Two guard lists take precedence inside the roots:
+//  * PROTECTED - secrets, never read or changed: MCPRelay's credentials and
+//    config, SSH/GPG/cloud keys, OS and browser credential stores;
+//  * READ_ONLY - integrity only, readable but never changed: system folders,
+//    MCPRelay's program, logs and running code.
+// Both are extended via MCPRELAY_PROTECTED_DIRS / MCPRELAY_READONLY_DIRS.
 const norm = (p) => (WIN ? p.toLowerCase() : p);
-const ALLOWED = (process.env.MCPRELAY_ALLOWED_DIRS || homedir()).split(WIN ? ';' : ':').filter(Boolean).map((d) => path.resolve(d));
+const dirList = (v) => (v || '').split(WIN ? ';' : ':').filter(Boolean).map((d) => path.resolve(d));
+const ALLOWED = dirList(process.env.MCPRELAY_ALLOWED_DIRS || homedir());
+const E = process.env;
+const inHome = (...p) => path.join(homedir(), ...p);
+const PROTECTED = [...new Set([
+  ...(WIN ? [
+    E.APPDATA && path.join(E.APPDATA, 'MCPRelay'),
+    E.APPDATA && path.join(E.APPDATA, 'Microsoft', 'Credentials'), E.APPDATA && path.join(E.APPDATA, 'Microsoft', 'Protect'),
+    E.LOCALAPPDATA && path.join(E.LOCALAPPDATA, 'Microsoft', 'Credentials'),
+    E.LOCALAPPDATA && path.join(E.LOCALAPPDATA, 'Google', 'Chrome', 'User Data'),
+    E.LOCALAPPDATA && path.join(E.LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data'),
+    E.APPDATA && path.join(E.APPDATA, 'Mozilla', 'Firefox', 'Profiles'),
+  ] : []),
+  ...['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker'].map((d) => inHome(d)),
+].filter(Boolean).map((d) => path.resolve(d)).concat(dirList(E.MCPRELAY_PROTECTED_DIRS)))];
+const READ_ONLY = [...new Set([
+  ...(WIN
+    ? [E.SystemRoot || 'C:\\Windows', E.ProgramFiles, E['ProgramFiles(x86)'], E.ProgramW6432, E.ProgramData,
+        E.LOCALAPPDATA && path.join(E.LOCALAPPDATA, 'MCPRelay'), E.LOCALAPPDATA && path.join(E.LOCALAPPDATA, 'Programs', 'MCPRelay')]
+    : ['/bin', '/boot', '/dev', '/etc', '/lib', '/lib32', '/lib64', '/opt', '/proc', '/sbin', '/snap', '/sys', '/usr', '/var']),
+  path.dirname(fileURLToPath(import.meta.url)),                         // this server's own code
+  E.MCPRELAY_AUDIT_LOG && path.dirname(path.resolve(E.MCPRELAY_AUDIT_LOG)),
+].filter(Boolean).map((d) => path.resolve(d)).concat(dirList(E.MCPRELAY_READONLY_DIRS)))];
+// Per-drive system entries on Windows (any drive letter): read-only.
+const SYS_RE = /^[a-z]:\\(\$recycle\.bin|system volume information|recovery|config\.msi)(\\|$)|^[a-z]:\\(pagefile|hiberfil|swapfile)\.sys$/;
+const under = (x, root) => { const r = norm(root); return x === r || x.startsWith(r.endsWith(path.sep) ? r : r + path.sep); };
+function guardOf(real) { // 'protected' | 'read-only' | null
+  const x = norm(real);
+  if (PROTECTED.some((d) => under(x, d))) return 'protected';
+  if (READ_ONLY.some((d) => under(x, d)) || (WIN && SYS_RE.test(x))) return 'read-only';
+  return null;
+}
+// True if a guarded location lies inside `real` (deleting/moving it would take the guarded one along).
+const holdsGuarded = (real) => [...PROTECTED, ...READ_ONLY].some((d) => under(norm(d), real));
+function assertGuard(real, p, mode) {
+  const g = guardOf(real);
+  if (g === 'protected') throw new Error(`Protected path: ${p}. Credential and MCPRelay configuration folders are off-limits to file capabilities.`);
+  if (g === 'read-only' && mode === 'write') throw new Error(`Read-only path: ${p}. File capabilities do not change system folders or MCPRelay's program and logs.`);
+}
 async function realish(p) {
   // realpath of the longest existing prefix, so symlinks/junctions cannot escape the roots
   let cur = path.resolve(p); const rest = [];
@@ -64,12 +111,12 @@ async function realish(p) {
     catch { const parent = path.dirname(cur); if (parent === cur) return path.resolve(p); rest.push(path.basename(cur)); cur = parent; }
   }
 }
-async function allowedPath(p) {
+async function allowedPath(p, mode = 'read') {
   if (typeof p !== 'string' || !p) throw new ProtocolError(-32602, 'path is required');
   const real = await realish(p);
   const x = norm(real);
-  const ok = ALLOWED.some((root) => { const r = norm(root); return x === r || x.startsWith(r.endsWith(path.sep) ? r : r + path.sep); });
-  if (!ok) throw new Error(`Path not allowed: ${p}. Must be within one of these directories: ${ALLOWED.join(', ')}`);
+  if (!ALLOWED.some((root) => under(x, root))) throw new Error(`Path not allowed: ${p}. Must be within one of these directories: ${ALLOWED.join(', ')}`);
+  assertGuard(real, p, mode);
   return real;
 }
 
@@ -93,8 +140,10 @@ async function listDir(dir, depth, prefix = '', out = []) {
     if (out.length >= 5000) { out.push('[WARNING] listing truncated at 5000 entries'); return out; }
     const rel = prefix + e.name;
     if (e.isDirectory()) {
+      const full = path.join(dir, e.name);
+      if (guardOf(full) === 'protected') { out.push(`[DIR] ${rel} (protected, not listed)`); continue; }
       out.push(`[DIR] ${rel}`);
-      if (depth > 1) await listDir(path.join(dir, e.name), depth - 1, rel + path.sep, out);
+      if (depth > 1) await listDir(full, depth - 1, rel + path.sep, out);
     } else out.push(`[FILE] ${rel}`);
   }
   return out;
@@ -113,6 +162,7 @@ async function searchFiles(root, namePattern, contentText, max) {
       visited++;
       if (e.isSymbolicLink()) continue; // links/junctions could lead outside the allowed roots
       const full = path.join(dir, e.name);
+      if (guardOf(full) === 'protected') continue; // never search credential stores
       if (e.isDirectory()) { if (!['node_modules', '.git'].includes(e.name)) stack.push(full); continue; }
       if (nameRe && !nameRe.test(e.name)) continue;
       if (!needle) hits.push(full);
@@ -195,6 +245,8 @@ async function removePath(p, recursive) {
   if (ALLOWED.some((root) => { const r = norm(root); return r === x || r.startsWith(x + path.sep); })) {
     throw new Error(`Refusing to remove an allowed root (or a directory containing one): ${p}`);
   }
+  assertGuard(target, p, 'write');
+  if (holdsGuarded(x)) throw new Error(`Refusing to remove ${p}: it contains a protected or read-only folder.`);
   let st;
   try { st = await fs.lstat(target); } catch (e) { if (e.code === 'ENOENT') return text(`Not found: ${p}`, true); throw e; }
   if (st.isSymbolicLink()) {
@@ -309,7 +361,7 @@ async function detectShells() {
 const shellLabel = () => SHELLS.available.find((s) => s.shell === SHELLS.default)?.note || SHELLS.default;
 const envNote = (kind) => kind === 'exec'
   ? ` [Node "${NODE_NAME}", ${OS_DESC}. Default shell: ${shellLabel()}${WIN ? ', UTF-8 output' : ''}; other shells via args.shell: ${SHELLS.available.filter((s) => s.shell !== SHELLS.default).map((s) => `${s.shell} (${s.note})`).join(', ') || 'none'}. Working directory: ${homedir()}. Commands run with the user's full rights and are NOT limited to the file roots]`
-  : ` [Node "${NODE_NAME}", ${OS_DESC}. File capabilities only work inside: ${ALLOWED.join('; ')}]`;
+  : ` [Node "${NODE_NAME}", ${OS_DESC}. File capabilities only work inside: ${ALLOWED.join('; ')}; system folders are read-only and credential/MCPRelay config folders are off-limits (see list_capabilities)]`;
 
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
@@ -344,23 +396,26 @@ const TOOLS = {
   write_file: { d: 'Write (mode=rewrite, default) or append (mode=append) UTF-8 text to a file; creates parent directories.', s: P({ path: str, content: str, mode: { type: 'string', enum: ['rewrite', 'append'] } }, ['path', 'content']),
     run: async (a) => {
       if (typeof a.content !== 'string') throw new ProtocolError(-32602, 'content must be a string');
-      const p = await allowedPath(a.path); await fs.mkdir(path.dirname(p), { recursive: true });
+      const p = await allowedPath(a.path, 'write'); await fs.mkdir(path.dirname(p), { recursive: true });
       if (a.mode === 'append') await fs.appendFile(p, a.content, 'utf8');
       else { const tmp = `${p}.mcprelay-${process.pid}.tmp`; await fs.writeFile(tmp, a.content, 'utf8'); await fs.rename(tmp, p); } // atomic replace
       return text(`Wrote ${Buffer.byteLength(a.content)} bytes to ${a.path} (${a.mode || 'rewrite'})`);
     } },
   edit_block: { d: 'Replace exact text in a file. expected_replacements (default 1) must equal the number of occurrences.', s: P({ file_path: str, old_string: str, new_string: str, expected_replacements: num }, ['file_path', 'old_string', 'new_string']),
     run: async (a) => {
-      const p = await allowedPath(a.file_path); const src = await fs.readFile(p, 'utf8');
+      const p = await allowedPath(a.file_path, 'write'); const src = await fs.readFile(p, 'utf8');
       const n = a.old_string ? src.split(a.old_string).length - 1 : 0; const want = a.expected_replacements ?? 1;
       if (!a.old_string || n !== want) return text(`Found ${n} occurrence(s) of old_string, expected ${want}; no changes made.`, true);
       const tmp = `${p}.mcprelay-${process.pid}.tmp`; await fs.writeFile(tmp, src.split(a.old_string).join(a.new_string), 'utf8'); await fs.rename(tmp, p);
       return text(`Replaced ${n} occurrence(s) in ${a.file_path}`);
     } },
   create_directory: { d: 'Create a directory (and parents).', s: P({ path: str }, ['path']),
-    run: async (a) => { await fs.mkdir(await allowedPath(a.path), { recursive: true }); return text(`Directory ready: ${a.path}`); } },
+    run: async (a) => { await fs.mkdir(await allowedPath(a.path, 'write'), { recursive: true }); return text(`Directory ready: ${a.path}`); } },
   move_file: { d: 'Move or rename a file or directory.', s: P({ source: str, destination: str }, ['source', 'destination']),
-    run: async (a) => { await fs.rename(await allowedPath(a.source), await allowedPath(a.destination)); return text(`Moved ${a.source} -> ${a.destination}`); } },
+    run: async (a) => {
+      const src = await allowedPath(a.source, 'write');
+      if (holdsGuarded(norm(src))) throw new Error(`Refusing to move ${a.source}: it contains a protected or read-only folder.`);
+      await fs.rename(src, await allowedPath(a.destination, 'write')); return text(`Moved ${a.source} -> ${a.destination}`); } },
   remove_path: { d: 'Delete a file, an empty directory, or (recursive=true) a directory with its contents. Only inside the allowed roots; never an allowed root itself. Links are removed without touching their targets.', s: P({ path: str, recursive: { type: 'boolean' } }, ['path']),
     run: async (a) => removePath(a.path, a.recursive === true) },
   get_file_info: { d: 'File or directory metadata; sha256=true adds the file\'s SHA-256.', s: P({ path: str, sha256: { type: 'boolean' } }, ['path']),
@@ -434,8 +489,10 @@ function catalog(onlyClass) {
   return {
     node: NODE_NAME, server_version: VERSION,
     catalog_version: createHash('sha256').update(JSON.stringify(caps)).digest('hex').slice(0, 12),
-    environment: { os: OS_DESC, file_roots: ALLOWED, default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
-      notes: ['File capabilities only work inside file_roots.', "Shell commands run with the user's full rights and are not limited to file_roots."] },
+    environment: { os: OS_DESC, file_roots: ALLOWED, protected_paths: PROTECTED, read_only_paths: READ_ONLY.concat(WIN ? ['<drive>:\$Recycle.Bin, System Volume Information, Recovery, Config.Msi, *.sys page/hibernate files'] : []),
+      default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
+      notes: ['File capabilities only work inside file_roots, never touch protected_paths, and only read read_only_paths. This is a guardrail against mistakes, not a security boundary.',
+        "Shell commands run with the user's full rights and are not limited by these lists."] },
     usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older.',
     classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
     capabilities: caps,
