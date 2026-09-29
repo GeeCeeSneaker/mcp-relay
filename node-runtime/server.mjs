@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -129,10 +129,12 @@ const text = (t, isError = false) => {
 // Stable error codes for agents. Every failed call returns
 // "Error [<code>]: <message> (next: <action>)" plus _meta["io.mcprelay/error"],
 // and the audit log records the same code. action tells the caller what to do:
-// fix_args = change the arguments and retry; ask_user = stop and ask the user;
-// retry_later = transient; stop = unexpected server-side failure.
+// refresh_catalog = capabilities may have changed: call list_capabilities again,
+// then retry with the current names/classes/arguments; fix_args = change the
+// arguments and retry; ask_user = stop and ask the user; retry_later =
+// transient; stop = unexpected server-side failure.
 const ERRORS = {
-  invalid_args: 'fix_args', unknown_capability: 'fix_args', wrong_class: 'fix_args', path_not_allowed: 'fix_args',
+  invalid_args: 'refresh_catalog', unknown_capability: 'refresh_catalog', wrong_class: 'refresh_catalog', path_not_allowed: 'fix_args',
   not_found: 'fix_args', already_exists: 'fix_args', not_empty: 'fix_args', is_a_directory: 'fix_args', not_a_directory: 'fix_args',
   too_large: 'fix_args', binary_file: 'fix_args', no_match: 'fix_args', spawn_failed: 'fix_args',
   bad_handle: 'fix_args', process_exited: 'fix_args',
@@ -140,14 +142,16 @@ const ERRORS = {
   timeout: 'retry_later', busy: 'retry_later',
   internal_error: 'stop',
 };
-const NEXT = { fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
+const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
 class CapError extends Error { constructor(code, message) { super(message); this.code = code; } }
 const fail = (code, message) => { throw new CapError(code, message); };
 const ERRNO = { ENOENT: 'not_found', EEXIST: 'already_exists', ENOTEMPTY: 'not_empty', EISDIR: 'is_a_directory', ENOTDIR: 'not_a_directory',
   EACCES: 'permission_denied', EPERM: 'permission_denied', EBUSY: 'busy', EMFILE: 'busy' };
 function errorResult(code, message) {
   const action = ERRORS[code] || 'stop';
-  return { ...text(`Error [${code}]: ${message} (next: ${NEXT[action]})`, true), _meta: { 'io.mcprelay/error': { code, action } } };
+  // catalog_version lets the caller see whether its copy of the catalog is stale.
+  const catalog_version = catalogVersion();
+  return { ...text(`Error [${code}]: ${message} (next: ${NEXT[action]}; catalog_version ${catalog_version})`, true), _meta: { 'io.mcprelay/error': { code, action, catalog_version } } };
 }
 const codeOf = (e) => (e instanceof CapError ? e.code : e instanceof ProtocolError ? 'invalid_args' : ERRNO[e?.code] || 'internal_error');
 
@@ -547,22 +551,23 @@ const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
 const allCaps = () => Object.entries(TOOLS).map(([name, t]) => ({
   name, class: META[name][1], invoke_with: invokeTool(META[name][1]), title: META[name][0], description: t.d, args_schema: t.s,
 }));
+const catalogVersion = () => createHash('sha256').update(JSON.stringify(allCaps())).digest('hex').slice(0, 12);
 function catalog(onlyClass) {
   const all = allCaps();
   return {
     node: NODE_NAME, server_version: VERSION,
     // Hash of the complete catalog (capabilities, classes, schemas), the same
     // for every filtered view; clients may cache the catalog until it changes.
-    catalog_version: createHash('sha256').update(JSON.stringify(all)).digest('hex').slice(0, 12),
+    catalog_version: catalogVersion(),
     view: onlyClass || 'all',
     environment: { os: OS_DESC, file_roots: ALLOWED, protected_paths: PROTECTED, read_only_paths: READ_ONLY.concat(WIN ? ['<drive>:\\$Recycle.Bin, System Volume Information, Recovery, Config.Msi, *.sys page/hibernate files'] : []),
       default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
       notes: ['File capabilities only work inside file_roots, never touch protected_paths, and only read read_only_paths. This is a guardrail against mistakes, not a security boundary.',
         "Shell commands run with the user's full rights and are not limited by these lists."] },
-    usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older.',
+    usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older. Capabilities, their classes and arguments can change at any time (server updates). If a call fails with next action refresh_catalog, or its error shows a catalog_version different from yours, call list_capabilities again and retry with the current catalog.',
     classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
     errors: { format: 'Error [<code>]: <message> (next: <action>); also in result _meta["io.mcprelay/error"] = {code, action}',
-      actions: { fix_args: NEXT.fix_args, ask_user: NEXT.ask_user, retry_later: NEXT.retry_later, stop: NEXT.stop }, codes: ERRORS },
+      actions: NEXT, codes: ERRORS },
     capabilities: onlyClass ? all.filter((c) => c.class === onlyClass) : all,
   };
 }
@@ -592,12 +597,12 @@ function checkArgs(schema, input) {
 
 const EXPOSED = () => [
   { name: 'list_capabilities', title: 'List capabilities',
-    description: `List everything this node can do right now: each capability with its risk class, the invoke_* tool to use, a description and its argument schema, plus the node environment (OS, file roots, shells). Call it once at the start of a conversation and whenever a capability is reported unknown. Optional: class (${Object.keys(CLASSES).join(', ')}).${envNote('file')}`,
+    description: `List everything this node can do right now: each capability with its risk class, the invoke_* tool to use, a description and its argument schema, plus the node environment (OS, file roots, shells). Call it once at the start of a conversation. Capabilities can change at any time: call it again whenever a call fails with next action refresh_catalog or an unexpected error, then retry with the current catalog. Optional: class (${Object.keys(CLASSES).join(', ')}).${envNote('file')}`,
     inputSchema: P({ class: { type: 'string', enum: Object.keys(CLASSES) } }),
     annotations: { title: 'List capabilities', ...CLASSES.read.hints } },
   ...Object.entries(CLASSES).map(([cls, c]) => ({
     name: invokeTool(cls), title: c.title,
-    description: `Run one "${cls}" capability of this node: ${c.covers}. capability = a name from list_capabilities whose class is "${cls}" (currently: ${namesOf(cls).join(', ')}); args = that capability's arguments as a JSON object. Capabilities of another class are refused.${envNote(cls === 'exec' ? 'exec' : 'file')}`,
+    description: `Run one "${cls}" capability of this node: ${c.covers}. capability = a name from list_capabilities whose class is "${cls}" (currently: ${namesOf(cls).join(', ')}); args = that capability's arguments as a JSON object. Capabilities of another class are refused. Capabilities may be updated: if a call fails with next action refresh_catalog (unknown capability, wrong class, invalid args), call list_capabilities again and retry.${envNote(cls === 'exec' ? 'exec' : 'file')}`,
     inputSchema: P({ capability: { type: 'string', description: `Capability name (class "${cls}")` },
       args: { type: 'object', description: 'Arguments for the capability, per its args_schema in list_capabilities', additionalProperties: true } }, ['capability']),
     annotations: { title: c.title, ...c.hints },

@@ -62,3 +62,12 @@ Rules:
 - **Cancellation.** Calls pass an AbortSignal that fires at the 120 s bound.
   - `search_files` and `list_directory` also have their own budgets (60 s / 30 s, plus 200 000 entries for search). At the budget they stop and return partial results marked `[partial: …]` instead of timing out.
   - Hashing stops reading when the call is aborted.
+
+## Update 2026-09-29 — v2.3.0 (catalog refresh on failure)
+
+- The Owner asked that callers be told capabilities can change, and that they should re-read the catalog when a call fails.
+- A new next action, `refresh_catalog`: "capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments".
+  - It is used for `unknown_capability`, `wrong_class` and `invalid_args`.
+  - Every error also carries the server's current `catalog_version`, in the text and in `_meta["io.mcprelay/error"]`, so a caller can see that its copy is stale.
+- The catalog's `usage` says capabilities, classes and arguments can change at any time. Because the catalog is fetched fresh, this works without a ChatGPT tool-list refresh.
+- The fixed tools' descriptions carry the same notice. ChatGPT picks up those descriptions only at its next tool-list refresh or connector re-add; until then, the catalog and the error messages carry the notice.

@@ -487,6 +487,13 @@ await check('failures carry stable error codes and a next action', async () => {
   }
   const c = await catalog(b);
   expect(c.errors?.codes?.protected_path === 'ask_user' && c.errors.codes.timeout === 'retry_later', 'error codes missing from the catalog');
+  // Catalog-related failures tell the caller to re-read the catalog, with the current version.
+  for (const [via, args] of [['invoke_read', { capability: 'no_such_capability', args: {} }], ['invoke_read', { capability: 'remove_path', args: { path: fixtureFile } }],
+    ['invoke_read', { capability: 'read_file', args: { file: fixtureFile } }]]) {
+    const e = await invokeRaw(b, via, args);
+    expect(e.isError && /next: capabilities may have changed: call list_capabilities again/.test(e.text) && e.text.includes(`catalog_version ${c.catalog_version}`), `refresh hint: ${brief(e.text)}`);
+  }
+  expect(/change at any time/.test(c.usage), 'catalog usage lacks the update notice');
 });
 
 await check('catalog_version is the same for every filtered view', async () => {
