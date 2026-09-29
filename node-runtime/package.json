@@ -1,17 +1,11 @@
 {
   "name": "mcprelay-node-runtime",
   "private": true,
-  "description": "Pinned node-side runtime for MCPRelay (Desktop Commander + local adapter).",
+  "description": "MCPRelay node capability server (M1, ADR-0004): local tools over loopback MCP, both protocol eras.",
   "license": "MIT",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/node": "2.1.0",
-    "@modelcontextprotocol/sdk": "1.30.1",
-    "@modelcontextprotocol/server": "2.2.0",
-    "@wonderwhy-er/desktop-commander": "0.2.51"
-  },
-  "overrides": {
-    "sharp": "0.35.5",
-    "uuid": "11.1.1"
+    "@modelcontextprotocol/server": "2.2.0"
   }
 }

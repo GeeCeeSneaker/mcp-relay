@@ -1,11 +1,12 @@
 // MCPRelay node app (Windows): tray app + supervisor for the node runtime.
 //
 // Starts, as the logged-in user and without console windows:
-//   * the bridge (node bridge.mjs -> one long-lived Desktop Commander), and
+//   * the local capability server (node server.mjs, ADR-0004), and
 //   * the reverse tunnel (Windows OpenSSH ssh.exe -R to the VPS),
-// restarts either on exit with backoff, restarts the tunnel after resume or a
-// network change, and kills every child process tree when it exits (Job
-// Objects). Closing the window hides it to the tray.
+// restarts either on exit with backoff, restarts a server that stops answering
+// health checks, restarts the tunnel after resume or a network change, and kills
+// every child process tree when it exits (Job Objects). An unexpected exception
+// in the app itself restarts the app. Closing the window hides it to the tray.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
 // (packaging/windows/build.ps1); C# 5 language level on purpose.
@@ -27,7 +28,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("MCPRelay")]
 [assembly: System.Reflection.AssemblyProduct("MCPRelay")]
-[assembly: System.Reflection.AssemblyVersion("0.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0")]
 
 namespace MCPRelay
 {
@@ -37,10 +38,19 @@ namespace MCPRelay
         static void Main(string[] args)
         {
             bool created;
+            bool restarted = Array.IndexOf(args, "--restarted") >= 0;
             using (var mutex = new Mutex(true, @"Local\MCPRelay.Singleton", out created))
             using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\MCPRelay.Show"))
             {
+                if (!created && restarted)
+                {
+                    // Self-restart after a crash: wait for the previous instance to go away.
+                    try { created = mutex.WaitOne(15000); } catch (AbandonedMutexException) { created = true; }
+                }
                 if (!created) { showEvent.Set(); return; }
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += (s, e) => MainForm.CrashRestart(e.Exception);
+                AppDomain.CurrentDomain.UnhandledException += (s, e) => MainForm.CrashRestart(e.ExceptionObject as Exception);
                 // csc-built assemblies run with legacy TLS defaults; allow TLS 1.2/1.3.
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)12288;
                 Application.EnableVisualStyles();
@@ -64,6 +74,7 @@ namespace MCPRelay
         public string PublicUrl = "";
         public string BridgeScript = "";   // optional override (development)
         public string NodeExe = "";        // optional override (development)
+        public string AllowedDirs = "";    // file-tool roots, ';'-separated (default: user profile)
 
         public static string Dir { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MCPRelay"); } }
         public static string FilePath { get { return Path.Combine(Dir, "config.json"); } }
@@ -89,6 +100,7 @@ namespace MCPRelay
                 c.PublicUrl = s("publicUrl").TrimEnd('/');
                 c.BridgeScript = Environment.ExpandEnvironmentVariables(s("bridgeScript"));
                 c.NodeExe = Environment.ExpandEnvironmentVariables(s("nodeExe"));
+                c.AllowedDirs = Environment.ExpandEnvironmentVariables(s("allowedDirs"));
             }
             catch (Exception e) { error = "Invalid config.json: " + e.Message; return c; }
             if (c.VpsHost == "" || c.RemotePort <= 0) error = "config.json needs vpsHost and remotePort";
@@ -101,7 +113,7 @@ namespace MCPRelay
 
     // --------------------------------------------------------- job objects
     // Each supervised process runs in its own Job Object: terminating the job
-    // kills the whole tree (node -> Desktop Commander -> shells), and closing the
+    // kills the whole tree (node server -> shells -> commands), and closing the
     // last handle (app exit or crash) does the same.
     static class Jobs
     {
@@ -301,10 +313,36 @@ namespace MCPRelay
         DateTime? tunnelAuthAt;
         bool quitting, hintShown;
         int healthTicks;
+        volatile int healthFailures;
+        static MainForm current;
+        static int crashing;
+
+        // Unexpected exception anywhere in the app: log it, stop the children and
+        // start a fresh instance (which waits for this one's mutex), then exit.
+        public static void CrashRestart(Exception ex)
+        {
+            if (Interlocked.Exchange(ref crashing, 1) != 0) return;
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MCPRelay", "logs");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "mcprelay.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [app] CRASH, restarting: " + ex + Environment.NewLine, Encoding.UTF8);
+                if (current != null)
+                {
+                    if (current.bridge != null) current.bridge.Stop();
+                    if (current.tunnel != null) current.tunnel.Stop();
+                    current.tray.Visible = false;
+                }
+                Process.Start(Application.ExecutablePath, "--minimized --restarted");
+            }
+            catch { }
+            Environment.Exit(1);
+        }
 
         public MainForm(bool startMinimized, EventWaitHandle showEvent)
         {
             this.showEvent = showEvent;
+            current = this;
             Directory.CreateDirectory(logDir);
             config = Config.Load(out configError);
             BuildUi();
@@ -397,14 +435,15 @@ namespace MCPRelay
         {
             string nodeExe = config.NodeExe != "" ? config.NodeExe : Path.Combine(AppDir, @"runtime\node\node.exe");
             if (!File.Exists(nodeExe)) nodeExe = "node.exe";
-            string bridgeScript = config.BridgeScript != "" ? config.BridgeScript : Path.Combine(AppDir, @"runtime\app\bridge.mjs");
+            string bridgeScript = config.BridgeScript != "" ? config.BridgeScript : Path.Combine(AppDir, @"runtime\app\server.mjs");
             string ssh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"OpenSSH\ssh.exe");
 
-            bridge = new Supervised("bridge", () =>
+            bridge = new Supervised("server", () =>
             {
                 var psi = new ProcessStartInfo(nodeExe, Quote(bridgeScript) + " --port " + config.LocalPort);
                 psi.WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 psi.EnvironmentVariables["MCPRELAY_BRIDGE_TOKEN"] = File.ReadAllText(Config.TokenPath).Trim();
+                if (config.AllowedDirs != "") psi.EnvironmentVariables["MCPRELAY_ALLOWED_DIRS"] = config.AllowedDirs;
                 return psi;
             }, new[] { 1, 2, 5, 10, 30 });
 
@@ -413,12 +452,12 @@ namespace MCPRelay
                 string args = "-N -T -i " + Quote(config.SshKey) +
                     " -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" +
                     " -o UserKnownHostsFile=" + Quote(config.KnownHosts) +
-                    " -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3" +
+                    " -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes" +
                     " -o ConnectTimeout=15 -o LogLevel=VERBOSE" +
                     " -R 127.0.0.1:" + config.RemotePort + ":127.0.0.1:" + config.LocalPort +
                     " " + config.TunnelUser + "@" + config.VpsHost;
                 return new ProcessStartInfo(ssh, args);
-            }, new[] { 2, 5, 10, 15 });
+            }, new[] { 1, 2, 5, 10, 15 });
 
             bridge.Line += Log; tunnel.Line += Log;
             tunnel.Line += (src, text) => { if (text.Contains("Authenticated to")) tunnelAuthAt = DateTime.Now; };
@@ -451,7 +490,20 @@ namespace MCPRelay
             healthTicks++;
             if (bridge != null)
             {
-                ThreadPool.QueueUserWorkItem(_ => { dcUp = HttpOk("http://127.0.0.1:" + config.LocalPort + "/healthz", 2000); });
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    dcUp = HttpOk("http://127.0.0.1:" + config.LocalPort + "/healthz", 3000);
+                    // A server that is running but not answering (hung) is restarted after
+                    // 3 consecutive failed checks (~15 s), once it had 20 s to start.
+                    var since = bridge.RunningSince;
+                    if (dcUp || !bridge.IsRunning || !since.HasValue || (DateTime.Now - since.Value).TotalSeconds < 20) { healthFailures = 0; return; }
+                    if (++healthFailures >= 3)
+                    {
+                        healthFailures = 0;
+                        Log("app", "server not answering health checks; restarting it");
+                        bridge.Restart();
+                    }
+                });
                 if (config.PublicUrl != "" && (healthTicks % 12 == 1))
                     ThreadPool.QueueUserWorkItem(_ => { publicUp = HttpOk(config.PublicUrl + "/healthz", 10000); publicChecked = true; });
             }
@@ -480,7 +532,7 @@ namespace MCPRelay
                 return;
             }
             bool bridgeRunning = bridge != null && bridge.IsRunning;
-            bridgeLabel.Text = "Desktop Commander bridge: " + (bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
+            bridgeLabel.Text = "Local server: " + (bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
             bool connected = TunnelConnected;
             tunnelLabel.Text = "Tunnel to VPS: " + (connected ? "connected" + Since(tunnelAuthAt) : tunnel != null && tunnel.IsRunning ? "connecting" : "disconnected") + RestartInfo(tunnel);
             publicLabel.Text = config.PublicUrl == "" ? "" : "Public endpoint: " + (!publicChecked ? "checking" : publicUp ? "reachable" : "unreachable") + "  (" + config.PublicUrl + ")";

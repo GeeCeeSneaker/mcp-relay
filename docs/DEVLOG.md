@@ -1,5 +1,26 @@
 # Development Log
 
+## 2026-09-29 — Own capability server live; reliability hardening (ADR-0004 accepted, ADR-0006)
+
+- **Owner decisions:** adopt the project-owned server, PowerShell default, extra tools on demand, and reliability first.
+- **Node:**
+  - `node-runtime/server.mjs` 1.0.0 replaces Desktop Commander and the bridge;
+  - per-call bounds, caps, `Connection: close`, and a clean exit on uncaught errors;
+  - search does not follow links, and content search is literal (no user regex);
+  - tray app 1.0.0: health-based restart of a hung server, self-restart on crash, 10 s × 3 SSH keepalive, `allowedDirs` config.
+- **VPS:**
+  - `Restart=always` with no start limit;
+  - watchdog timer for unresponsive gateway/Caddy;
+  - Caddy dial retry (15 s);
+  - gateway patch 0002 (backend connect retries ~15 s);
+  - sshd ClientAlive 10 s × 3.
+- **Results:**
+  - chaos run with 5 fault types: 100/100 calls ok;
+  - frozen gateway and frozen node server were both recovered automatically;
+  - 30-min soak: 360/360 calls ok, including an unplanned real network reset.
+- **Resources:** VPS ~190 MiB and < 1 % CPU; node ~121 MiB (idle) to ~135 MiB (load) and < 0.5 % CPU.
+- Evidence: `docs/evidence/P2-reliability-and-resources-2026-09-29.md`.
+
 ## 2026-09-29 — Option A deployed; desk prototype compared (ADR-0004/0005)
 
 - A (ADR-0005): a 41-line gateway patch reuses one connected backend client, applied by `build-gateway-bundle.sh`. Public p50 went 0.70 s → 0.28 s (sustained 0.27 s). Fault run: 1/50 calls failed at the tunnel drop, then the client reconnected in ~2 s.

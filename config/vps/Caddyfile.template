@@ -27,7 +27,12 @@
 	# Only allow-listed OAuth clients (the Owner's own ChatGPT connector) may
 	# start an authorization. Blocks consent phishing via someone else's client.
 <client-allowlist>
-	reverse_proxy 127.0.0.1:18000
+	# Ride out a gateway restart: retry the *connection* (never a sent request)
+	# to the gateway for up to 15 s before failing the client's request.
+	reverse_proxy 127.0.0.1:18000 {
+		lb_try_duration 15s
+		lb_try_interval 250ms
+	}
 	log {
 		output stderr
 		format console

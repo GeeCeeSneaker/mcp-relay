@@ -1,7 +1,7 @@
 # Builds the self-contained Windows node package into <OutDir>:
 #   MCPRelay.exe            tray app / supervisor (compiled with the .NET Framework csc in Windows)
 #   runtime\node\node.exe   pinned Node.js (SHA-256 verified)
-#   runtime\app\            bridge.mjs + production node_modules (npm ci from the lockfile)
+#   runtime\app\            server.mjs + production node_modules (npm ci from the lockfile)
 #   install.ps1, uninstall.ps1
 #
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 [-OutDir dist\MCPRelay]
@@ -42,8 +42,8 @@ $nodeDir = Join-Path $tmp "node-$NodeVersion-win-x64"
 Copy-Item "$nodeDir\node.exe", "$nodeDir\LICENSE" "$OutDir\runtime\node\"
 Remove-Item -Recurse -Force $tmp
 
-Write-Host "== bridge + production dependencies (npm ci)"
-foreach ($f in 'bridge.mjs', 'package.json', 'package-lock.json') {
+Write-Host "== capability server + production dependencies (npm ci)"
+foreach ($f in 'server.mjs', 'package.json', 'package-lock.json') {
   Copy-Item (Join-Path $repo "node-runtime\$f") "$OutDir\runtime\app\"
 }
 Push-Location "$OutDir\runtime\app"
@@ -59,7 +59,7 @@ MCPRelay node package
 built:   $(Get-Date -Format s)
 commit:  $commit
 node:    $NodeVersion
-bridge:  $((Select-String -Path (Join-Path $repo 'node-runtime\bridge.mjs') -Pattern "const VERSION = '([^']+)'").Matches[0].Groups[1].Value)
+server:  $((Select-String -Path (Join-Path $repo 'node-runtime\server.mjs') -Pattern "const VERSION = '([^']+)'").Matches[0].Groups[1].Value)
 "@ | Set-Content -Encoding UTF8 "$OutDir\VERSION.txt"
 
 $size = (Get-ChildItem -Recurse $OutDir | Measure-Object Length -Sum).Sum / 1MB

@@ -45,6 +45,14 @@ Methods:
   - Job Objects prevent orphaned process trees.
 - **Repository:** no identifiers in history; CI enforces public-hygiene rules.
 
+## Update 2026-09-29 — capability server replaced (ADR-0004)
+
+Desktop Commander and the bridge were replaced by the project-owned `node-runtime/server.mjs`. Security-relevant effects:
+- **Smaller dependency surface:** production dependencies dropped from 547 npm packages to 7 (official MCP SDK only; `npm audit` 0).
+- **No third-party egress:** no remote feature flags or telemetry.
+- **Same boundary controls, now covered by the smoke tests:** loopback-only listener; bearer token scrubbed from spawned commands; file tools confined to allowed roots, including through symlinks and junctions.
+- **New responsibility:** the project now owns the tool code. It needs review on every change, just like the gateway patches (`patches/mcp-gateway/0001`, `0002`).
+
 ## Residual risk classes
 
 1. **Real-identity operation.** ChatGPT can run any command as the Owner. `allowedDirectories` limits file tools, not the shell. Prompt injection is the main practical risk. Mitigate operationally: disable the connector when not in use, avoid "always allow" for write/exec tools, and optionally use DC `blockedCommands`.

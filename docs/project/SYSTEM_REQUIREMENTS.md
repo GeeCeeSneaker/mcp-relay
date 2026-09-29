@@ -2,7 +2,9 @@
 
 ## 1. Product boundary
 
-MCPRelay is a private/self-hosted remote-MCP access system. It does not replace Desktop Commander local capabilities; it transports and exposes those capabilities safely and simply to remote MCP clients.
+MCPRelay is a private/self-hosted remote-MCP access system. It exposes the local capabilities of computers we own safely and simply to remote MCP clients.
+
+Originally it transported Desktop Commander's tools. Since ADR-0004 it ships its own minimal capability server with DC-compatible tool names.
 
 ## 2. Functional requirements
 
@@ -16,7 +18,13 @@ The public endpoint must support the authentication/discovery/transport behavior
 A node behind normal NAT/dynamic residential networking must work without router port forwarding or a public inbound MCP listener. The node initiates connectivity to the VPS.
 
 ### FR-4 Local capability transparency
-For the selected/pinned Desktop Commander build, MCPRelay should forward the available tool set transparently except for explicit configuration restrictions. At minimum v1 must prove file/directory inspection, file read/write/edit, terminal command execution and long-running process/output handling representative of normal Desktop Commander use.
+The node capability server must provide, at minimum:
+- file/directory inspection;
+- file read/write/edit;
+- terminal command execution;
+- long-running process/output handling representative of normal Desktop Commander use.
+
+Tool names and arguments stay compatible with Desktop Commander's, so clients and tests are unaffected. Further tools (e.g. PDF/Office readers) are added on demonstrated need (ADR-0004).
 
 ### FR-5 Encrypted/authenticated transport
 Client->VPS uses HTTPS and accepted client authentication. Node->VPS uses authenticated encrypted transport. Public unauthenticated requests must not gain functional tool execution.

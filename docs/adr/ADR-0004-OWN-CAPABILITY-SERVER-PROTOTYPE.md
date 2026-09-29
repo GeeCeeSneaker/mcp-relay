@@ -1,7 +1,7 @@
 # ADR-0004 — Replace Desktop Commander with a Project-Owned Capability Server?
 
 - Date: 2026-09-29
-- Status: `PROPOSED — prototype evaluated; Owner decision pending`
+- Status: `ACCEPTED` (Owner, 2026-09-29): adopt; default shell PowerShell; extra tools (PDF/Office/images, etc.) added on demand. Implemented as `node-runtime/server.mjs` 1.0.0; Desktop Commander and the bridge were removed.
 - Change class: C3. It reverses the "no project-owned capability reimplementation" rule in `MODULE_DESIGN.md` M1.
 
 ## Context

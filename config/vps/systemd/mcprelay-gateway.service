@@ -1,6 +1,7 @@
 [Unit]
 Description=MCPRelay gateway (OAuth 2.1 AS + MCP aggregation)
 After=network-online.target
+StartLimitIntervalSec=0
 Wants=network-online.target
 
 [Service]
@@ -9,7 +10,7 @@ Group=mcprelay
 Environment=MCP_GATEWAY_CONFIG=/etc/mcprelay/gateway.yaml
 Environment=MCP_GATEWAY_ENCRYPTION_KEY_FILE=/etc/mcprelay/gateway.key
 ExecStart=/opt/mcprelay/gateway/.venv/bin/mcp-gateway run
-Restart=on-failure
+Restart=always
 RestartSec=3
 UMask=0077
 NoNewPrivileges=yes

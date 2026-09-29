@@ -1,0 +1,35 @@
+diff --git a/src/mcp_gateway/upstream.py b/src/mcp_gateway/upstream.py
+index 5667d84..4f1b6c8 100644
+--- a/src/mcp_gateway/upstream.py
++++ b/src/mcp_gateway/upstream.py
+@@ -56,6 +56,18 @@ CONNECT_FLOW_TIMEOUT_SECONDS = 300
+ CLIENT_METADATA_PATH = "/oauth/client-metadata.json"
+ UPSTREAM_CALLBACK_PATH = "/oauth/callback"
+ 
++# MCPRelay patch: retry backend connection *establishment* (never a request that
++# was sent) with httpcore2's exponential backoff (0, 0.5, 1, 2, 4, 8 s ~= 15 s).
++# This rides out a node's reverse tunnel reconnecting or its server restarting.
++BACKEND_CONNECT_RETRIES = 6
++
++
++def _retrying_client_factory(**kwargs: Any) -> httpx2.AsyncClient:
++    timeout = kwargs.pop("timeout", None) or httpx2.Timeout(30.0, read=300.0)
++    return httpx2.AsyncClient(
++        transport=httpx2.AsyncHTTPTransport(retries=BACKEND_CONNECT_RETRIES), timeout=timeout, **kwargs
++    )
++
+ 
+ class NoForwardStreamableHttpTransport(StreamableHttpTransport):
+     """Streamable HTTP transport that never forwards the caller's HTTP headers.
+@@ -325,7 +337,10 @@ class BackendManager:
+             len(headers),
+         )
+         transport = NoForwardStreamableHttpTransport(
+-            backend.url, headers=headers or None, auth=auth
++            backend.url,
++            headers=headers or None,
++            auth=auth,
++            httpx_client_factory=_retrying_client_factory,
+         )
+         return Client(transport)
+ 

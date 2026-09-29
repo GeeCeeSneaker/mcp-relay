@@ -31,7 +31,7 @@ Each concern should have one primary owner. The current candidates are named in 
 - MCP gateway: public MCP authentication and backend aggregation.
 - Reverse tunnel (OpenSSH reverse forward; rathole/frp fallback): outbound NAT traversal.
 - Local adapter (Supergateway or minimal SDK bridge): stdio-to-Streamable-HTTP adaptation.
-- Desktop Commander: local tools and execution.
+- Node capability server (`node-runtime/server.mjs`, ADR-0004): local tools and execution.
 
 Do not duplicate TLS, auth, policy or routing at multiple layers without a demonstrated failure mode.
 

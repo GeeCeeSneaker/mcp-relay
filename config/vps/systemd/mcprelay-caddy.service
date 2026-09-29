@@ -1,6 +1,7 @@
 [Unit]
 Description=MCPRelay TLS ingress (Caddy)
 After=network-online.target
+StartLimitIntervalSec=0
 Wants=network-online.target
 
 [Service]
@@ -8,7 +9,7 @@ User=caddy
 Group=caddy
 Environment=XDG_DATA_HOME=/var/lib/caddy XDG_CONFIG_HOME=/var/lib/caddy
 ExecStart=/opt/mcprelay/bin/caddy run --config /etc/mcprelay/Caddyfile --adapter caddyfile
-Restart=on-failure
+Restart=always
 RestartSec=3
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE

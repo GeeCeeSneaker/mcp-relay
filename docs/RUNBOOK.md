@@ -69,9 +69,20 @@ vps-install.sh ... --node <node>:<port>:node_ed25519.pub:bridge.token
 ```
 
 Operate the app from the tray icon: green = connected, yellow = starting/connecting, red = stopped/not configured.
-- Closing the window hides it to the tray; **Quit** stops the bridge, Desktop Commander and the tunnel.
+- Closing the window hides it to the tray; **Quit** stops the capability server and the tunnel.
 - Logs: `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log`.
-- Desktop Commander uses the user's own `%USERPROFILE%\.claude-server-commander\config.json`; set `"telemetryEnabled": false`.
+- File-tool roots default to the user profile. Set `"allowedDirs": "C:\\Users\\me;D:\\work"` in `%APPDATA%\MCPRelay\config.json` to change them, then use Restart services. Shell commands are not confined; they run as the user.
+- Self-healing:
+  - the server or tunnel exiting → restarted with backoff;
+  - the server not answering 3 health checks → restarted;
+  - resume from sleep or network change → tunnel reconnect;
+  - an app crash → the app restarts itself.
+
+VPS self-healing:
+- units use `Restart=always` with no start limit;
+- `mcprelay-watchdog.timer` restarts the gateway or Caddy when running but unresponsive (2 failed checks, 90 s start grace);
+- Caddy retries the gateway connection for 15 s;
+- the gateway retries the node connection (connect only, never a sent request) for ~15 s.
 - Uninstall: `%LOCALAPPDATA%\Programs\MCPRelay\uninstall.ps1 [-RemoveState]`.
 
 ## Connect ChatGPT (Owner)

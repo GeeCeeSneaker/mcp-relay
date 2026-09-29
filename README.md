@@ -13,24 +13,24 @@ ChatGPT / MCP client
         |
      HTTPS + auth
         |
-   TLS ingress              VPS   (existing proxy or Caddy)
+   TLS ingress              VPS   (Caddy)
         |
-   MCP Gateway + OAuth AS         (R0Wi/mcp-gateway candidate)
+   MCP Gateway + OAuth AS         (R0Wi/mcp-gateway, pinned + patches)
         |
   loopback backend
         |
-   reverse tunnel server          (existing sshd candidate)
+   reverse tunnel server          (existing sshd, forward-only account)
         |
    encrypted outbound tunnel
         |
-   reverse tunnel client    Node  (built-in ssh.exe candidate)
+   reverse tunnel client    Node  (built-in ssh.exe)
         |
-   stdio<->HTTP adapter           (Supergateway or minimal SDK bridge)
-        |
-   Desktop Commander              (one long-lived instance)
+   capability server              (node-runtime/server.mjs, one process)
         |
  local files/processes/terminal
 ```
+
+The node side is managed by a tray app (`app/windows`) that runs both processes as the logged-in user and restarts them.
 
 Candidate ordering and the evidence behind it are in `docs/adr/ADR-0002-P0-DESK-RESEARCH-REFINEMENT.md`. Component names are provisional. Responsibilities and external contracts matter more than preserving a specific package. The development team may replace a candidate component with a simpler/equivalent component inside the same responsibility boundary when evidence justifies it; architecture/trust-boundary expansion requires escalation.
 
