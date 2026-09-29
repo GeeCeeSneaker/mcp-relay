@@ -92,6 +92,19 @@ VPS self-healing:
 3. Log in on the gateway page with the gateway user and the password from `/root/mcprelay-gateway-password`, then approve.
 4. Tools appear as `<node>_<tool>`.
 
+### When the node's tool set changes
+
+ChatGPT caches the tool list when the connector is created. It does not re-fetch it on refresh or on `list_changed` (observed 2026-09-29), so after tools are added, removed or renamed, **delete and re-add the connector**. Restarting the gateway is not needed; it always lists the node's current tools.
+
+Procedure:
+1. Re-run `vps-install.sh` **without** `--allow-client` (first-connection mode).
+2. Re-add the connector in ChatGPT and log in.
+3. Read the `client_id` from the gateway log ("Issuing access/refresh token pair to client ..."). With CIMD it stayed the same connector URL.
+4. Re-run `vps-install.sh` with `--allow-client <client_id>`.
+5. Drop the older grants.
+
+Forgotten gateway password: read it over your own SSH session with `cat /root/mcprelay-gateway-password`, never through a chat.
+
 ## Tests
 
 ```bash
