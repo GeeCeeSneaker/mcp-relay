@@ -33,12 +33,14 @@ Measured from the VPS by polling the node bridge through the tunnel (`wait-node.
 
 All cases are well under the 60 s target.
 
-Pending, needs the Owner:
-- **T7 network outage:** not run by the development agent, because it required a temporary firewall change on a shared host.
-  - Partially observed on 2026-09-29: an unplanned network-path reset dropped every SSH connection from the node's IP.
-  - The tunnel was back in 2 s and no call failed (`P2-reliability-and-resources-2026-09-29.md`).
-  - A deliberate ≥ 60 s outage is still open.
-- **T9 sleep/resume:** still open.
+**T7 network outage and T9 sleep/resume — PASS (2026-09-29, observed in real use).** The Owner declined staged runs because a real outage and a real resume had already happened. Both are in the tray-app log (node server 2.1.0):
+- **T7:** the node's network path failed for about 2 h 40 min (06:31–09:12 UTC). Every tunnel attempt was closed before the SSH banner. The VPS sshd logged no attempt from the node in that window while it did log other clients, so the fault was on the node's network side.
+  - The app kept retrying with its capped backoff (1, 2, 5, 10, 15 s).
+  - With no manual action, the tunnel re-authenticated as soon as the path worked again. The Owner confirmed the recovery.
+  - An earlier unplanned network-path reset (tunnel back in 2 s) is in `P2-reliability-and-resources-2026-09-29.md`.
+- **T9:** Windows resumed from sleep at 09:11:33 UTC. The app logged `resumed from sleep; reconnecting tunnel` and at 09:11:49 `network available; reconnecting tunnel`. While the network came up, four attempts failed (banner timeout, closed before banner). The tunnel re-authenticated at 09:12:58, 85 s after resume, with no manual step.
+  - ChatGPT then used the node normally: about 110 calls, and no failure caused by connectivity.
+- Retries during a long outage log about 5 lines per attempt (~75 KB/h). The app log rotation (2 MB + one old file) bounds this.
 
 **T8 Windows power cycle — PASS (2026-09-29, Owner-initiated, node server 1.1.0).**
 - Shutdown was started from the Start menu. On power-on, Windows used Fast Startup (event 27, boot type 0x1).

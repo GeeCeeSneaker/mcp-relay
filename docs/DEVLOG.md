@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-29 — T7 and T9 observed in real use; WO-0002 done
+
+- **T7:** the node's network path failed for ~2 h 40 min. The tunnel retried with capped backoff and re-authenticated on its own once the path worked. The VPS logs show no attempt from the node in that window, so the fault was on the node's network side.
+- **T9:** Windows resumed from sleep, and the app reconnected on resume and on network-available. The tunnel was up 85 s after resume, while the network was still coming up.
+- The Owner declined staged repeats. WO-0002 (reliability and reproducibility) is done: T1–T9, chaos/soak, and the VPS rebuilt from the RUNBOOK.
+
 ## 2026-09-29 — Node server v2.2.0: agent-facing contract
 
 Implements a review of the live system.
