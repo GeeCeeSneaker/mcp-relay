@@ -38,14 +38,15 @@ ChatGPT / MCP client
 | reverse-tunnel client               |
 |   |                                 |
 |   v                                 |
-| local MCP HTTP adapter              |
-|   | stdio where needed              |
-|   v                                 |
-| Desktop Commander                   |
+| capability server (loopback MCP)    |
 |   |                                 |
 | local files/processes/terminal      |
 +-------------------------------------+
 ```
+
+Current implementation:
+- **VPS:** Caddy → `R0Wi/mcp-gateway` (pinned + 2 MCPRelay patches) → `sshd`.
+- **Node:** `ssh.exe` → `node-runtime/server.mjs` (ADR-0004), both supervised by the tray app (ADR-0003).
 
 The named starting candidates are Caddy, a lightweight MCP gateway, rathole, Supergateway and Desktop Commander. Candidate names do not create permanent architecture obligations.
 
@@ -57,11 +58,10 @@ ADR-0002 refines the candidate order from desk research:
 
 ## 4. Responsibility boundaries
 
-### Desktop Commander / local capability provider
-Owns local MCP tools and execution. MCPRelay should not reimplement file/process/terminal capabilities already supplied upstream.
+### Local capability server
+Owns the local MCP tools and their execution, served directly over loopback HTTP.
 
-### Local MCP HTTP adapter
-Adapts upstream stdio MCP to Streamable HTTP only when the selected local provider does not expose the required HTTP transport itself. Starting candidate: Supergateway. Remove this layer if it becomes redundant.
+Originally Desktop Commander, behind an adapter. Since ADR-0004 it is the project-owned `node-runtime/server.mjs`, a single process with no adapter layer. The Owner accepted the trade-off: fewer dependencies, no third-party egress, faster and more reliable, in exchange for owning the tool code. Add tools only on demonstrated need.
 
 ### Reverse connectivity
 Provides outbound NAT traversal, authenticated encryption, heartbeat/reconnect and a stable VPS-local backend. Starting candidate: rathole. It replaces the need for a general VPN for the current one-application requirement.

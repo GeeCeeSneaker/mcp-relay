@@ -5,32 +5,35 @@ This document defines **logical responsibilities and interfaces**, not mandatory
 ## M1 — Local Capability Runtime
 
 ### Purpose
-Expose Desktop Commander capabilities locally through a network transport that can be carried by the reverse tunnel.
+Provide the local tools (files, shell commands, long-running processes) as a loopback MCP endpoint that the reverse tunnel carries.
 
-### Candidate implementation
-`Desktop Commander (stdio) -> Supergateway (Streamable HTTP)`.
+### Implementation (ADR-0004, accepted 2026-09-29)
+`node-runtime/server.mjs` is a project-owned, single-process capability server.
+- It is built on the official MCP TypeScript SDK v2 only (`@modelcontextprotocol/server` + `/node`; 7 npm packages).
+- It serves 2026-07-28 natively and 2025-era clients through the SDK's stateless fallback.
+- Tool names and arguments are compatible with Desktop Commander's.
+
+History: Supergateway (rejected in P0-S1), then a bridge in front of Desktop Commander (P0–P2), then this server.
 
 ### Inputs/outputs
-- Input: local process environment and upstream Desktop Commander configuration.
+- Input: the interactive user's environment. `MCPRELAY_ALLOWED_DIRS` sets the file-tool roots (default: user home). `MCPRELAY_BRIDGE_TOKEN` is the gateway's bearer credential.
 - Output: loopback-only MCP HTTP endpoint.
 
 ### Required behavior
-- pinned compatible versions;
-- endpoint not exposed publicly/LAN by default (**listener binds 127.0.0.1 only**);
-- `tools/list` and representative tool calls succeed;
-- stdout/stderr/protocol framing remain valid during repeated calls;
-- **exactly one long-lived DC process per node, shared by all requests and sessions**. Processes started through `start_process` stay addressable from later, independent requests and survive gateway/tunnel reconnects (ADR-0002 F3);
-- DC telemetry disabled (`telemetryEnabled: false`); DC keeps working with its third-party egress blocked;
-- no project-owned capability reimplementation.
+- **The listener binds 127.0.0.1 only.** Every `/mcp` request needs the bearer token. The token is scrubbed from the environment of spawned commands.
+- `tools/list` and representative tool calls succeed in both protocol generations.
+- **One process owns all state.** Processes started with `start_process` stay addressable from later, independent requests.
+- **File tools are confined to the allowed roots** (symlink/junction-safe). Shell commands run with the user's full rights (Owner decision: real identity).
+- **Shell output is UTF-8** (default shell: PowerShell; `cmd.exe` on request). `force_terminate` kills the whole child tree.
+- **Reliability:**
+  - every call is bounded (120 s);
+  - errors become tool errors, never a crash;
+  - output, results and running sessions are capped;
+  - `Connection: close` on every response, so no keep-alive connection can outlive a tunnel break;
+  - an uncaught exception exits the process for a clean supervisor restart.
+- No third-party egress.
 
-### Substitution rule
-Supergateway spawns a child per request or per session and binds all interfaces, which is expected to fail the requirements above. If P0-S1 confirms this, replace it with a minimal project-owned bridge that uses only the official MCP SDK:
-- one DC child;
-- loopback bind;
-- forwards JSON-RPC;
-- restarts DC if it exits.
-
-Target size is < 300 lines, with no framework and no new runtime.
+Project-owned capability code is allowed here by ADR-0004. Keep it minimal: add tools only on demonstrated need.
 
 ### Acceptance
 See AT-LOCAL in `ACCEPTANCE_TEST_PLAN.md`.

@@ -148,9 +148,20 @@ for n in "${nodes[@]}"; do
 done
 install -m 0600 -o mcptunnel -g mcptunnel "$ak.new" "$ak"; rm -f "$ak.new"
 
-if ! grep -q '^Match User mcptunnel' /etc/ssh/sshd_config; then
-  log "append sshd Match block"
+# The mcptunnel Match block is kept identical to the repo template. It is the
+# last block in sshd_config (Match blocks run to end of file), so it is replaced
+# by truncating at its first line and appending the template.
+current_block=$(sed -n '/^Match User mcptunnel/,$p' /etc/ssh/sshd_config)
+wanted_block=$(grep -v '^#' "$cfg/sshd-mcptunnel.conf" | sed '/^$/d')
+if [ "$(printf '%s\n' "$current_block" | grep -v '^#' | sed '/^$/d')" != "$wanted_block" ]; then
+  log "install sshd Match block for mcptunnel"
   cp -p /etc/ssh/sshd_config /etc/ssh/sshd_config.mcprelay-bak
+  if grep -q '^Match User mcptunnel' /etc/ssh/sshd_config; then
+    sed -i '/^Match User mcptunnel/,$d' /etc/ssh/sshd_config
+    # drop the comment lines that preceded the old block
+    sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' /etc/ssh/sshd_config
+    while tail -1 /etc/ssh/sshd_config | grep -q '^#'; do sed -i '$d' /etc/ssh/sshd_config; done
+  fi
   { echo; cat "$cfg/sshd-mcptunnel.conf"; } >> /etc/ssh/sshd_config
   if ! sshd -t; then
     cp -p /etc/ssh/sshd_config.mcprelay-bak /etc/ssh/sshd_config
@@ -160,10 +171,14 @@ if ! grep -q '^Match User mcptunnel' /etc/ssh/sshd_config; then
 fi
 
 # --- services ----------------------------------------------------------------
-install -m 0644 "$cfg/systemd/mcprelay-gateway.service" "$cfg/systemd/mcprelay-caddy.service" /etc/systemd/system/
+echo "$domain" > /etc/mcprelay/domain
+install -m 0755 "$cfg/mcprelay-watchdog.sh" "$BIN/mcprelay-watchdog.sh"
+install -m 0644 "$cfg/systemd/mcprelay-gateway.service" "$cfg/systemd/mcprelay-caddy.service" \
+  "$cfg/systemd/mcprelay-watchdog.service" "$cfg/systemd/mcprelay-watchdog.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable -q mcprelay-gateway mcprelay-caddy
+systemctl enable -q --now mcprelay-watchdog.timer
 systemctl restart mcprelay-gateway mcprelay-caddy
 sleep 3
-systemctl is-active mcprelay-gateway mcprelay-caddy
+systemctl is-active mcprelay-gateway mcprelay-caddy mcprelay-watchdog.timer
 log "done"

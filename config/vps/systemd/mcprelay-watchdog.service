@@ -1,0 +1,6 @@
+[Unit]
+Description=MCPRelay watchdog (restart gateway/Caddy that stopped answering)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mcprelay/bin/mcprelay-watchdog.sh

@@ -131,7 +131,7 @@ const initOk = await check('initialize', async () => {
 });
 if (!initOk) process.exit(1);
 
-await check('tools/list contains required Desktop Commander tools', async () => {
+await check('tools/list contains the required tools', async () => {
   const { tools } = await a.listTools();
   const names = new Set(tools.map((t) => t.name));
   const missing = REQUIRED_TOOLS.map(tool).filter((n) => !names.has(n));

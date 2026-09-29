@@ -1,7 +1,8 @@
 name: local-adapter
 
-# AT-LOCAL on real Windows and Linux runners: pinned node runtime
-# (Desktop Commander + bridge) exercised by the project smoke client.
+# AT-LOCAL on real Windows and Linux runners: the node capability server
+# (node-runtime/server.mjs) exercised by the project smoke client in both MCP
+# protocol generations, plus a compile check of the Windows tray app.
 on:
   push:
     branches: [main]
@@ -30,24 +31,20 @@ jobs:
         run: |
           npm ci --prefix node-runtime --no-fund --no-audit
           npm ci --prefix tests --no-fund --no-audit
-      - name: Disable Desktop Commander telemetry
+      - name: Start capability server
         run: |
-          mkdir -p "$HOME/.claude-server-commander"
-          echo '{"telemetryEnabled": false}' > "$HOME/.claude-server-commander/config.json"
-      - name: Start bridge
-        run: |
-          # Fresh random bridge token per run; exported for the smoke step.
+          # Fresh random bearer token per run; exported for the smoke step.
           token=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
           echo "::add-mask::$token"
           echo "MCPRELAY_BRIDGE_TOKEN=$token" >> "$GITHUB_ENV"
           export MCPRELAY_BRIDGE_TOKEN=$token
-          node node-runtime/bridge.mjs --port 18001 > bridge.log 2>&1 &
+          node node-runtime/server.mjs --port 18001 > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:18001/healthz && exit 0
             sleep 1
           done
-          cat bridge.log; exit 1
-      - name: Smoke test (AT-LOCAL)
+          cat server.log; exit 1
+      - name: Smoke test (AT-LOCAL, both protocol eras)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             FIXTURE="$(cygpath -w "$HOME")\\mcprelay-fixture"; OSNAME=windows
@@ -58,20 +55,10 @@ jobs:
             echo "== protocol era: $era"
             node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
           done
-      - name: Smoke test desk prototype (ADR-0004)
+      - name: Extended checks (Windows)
+        if: runner.os == 'Windows'
         run: |
-          npm ci --prefix prototype/desk --no-fund --no-audit
-          node prototype/desk/desk.mjs --port 18002 > desk.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:18002/healthz >/dev/null && break; sleep 1; done
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            FIXTURE="$(cygpath -w "$HOME")\\mcprelay-fixture-desk"; OSNAME=windows
-          else
-            FIXTURE="$HOME/mcprelay-fixture-desk"; OSNAME=linux
-          fi
-          for era in legacy modern; do
-            echo "== desk, protocol era: $era"
-            node tests/mcp-smoke.mjs --url http://127.0.0.1:18002/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era"
-          done
+          node tests/compare-ext.mjs --url http://127.0.0.1:18001/mcp --token-env MCPRELAY_BRIDGE_TOKEN --fixture "$(cygpath -w "$HOME")\\mcprelay-ext"
       - name: Listener must be loopback-only
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -88,6 +75,6 @@ jobs:
           $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           & $csc /nologo /target:winexe /out:MCPRelay.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll app\windows\MCPRelay.cs
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - name: Bridge log
+      - name: Server log
         if: always()
-        run: cat bridge.log desk.log || true
+        run: cat server.log || true

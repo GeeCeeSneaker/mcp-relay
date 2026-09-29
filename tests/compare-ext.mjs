@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Extended capability checks used to compare local capability servers
-// (Desktop Commander via bridge vs. the desk prototype, ADR-0004). Windows node.
+// (the node capability server; originally Desktop Commander vs. the desk prototype, ADR-0004). Windows node.
 //
 //   node tests/compare-ext.mjs --url <mcp url> --token-env VAR --fixture <dir inside allowed dirs> [--prefix p_]
 import { parseArgs } from 'node:util';
@@ -71,6 +71,17 @@ await check('force_terminate kills the child tree', async () => {
 await check('file tool outside allowed dirs is denied', async () => {
   const r = await call('read_file', { path: 'C:\\Windows\\win.ini' });
   expect(r.isError || /not allowed/i.test(r.text), r.text.slice(0, 160));
+});
+await check('search_files finds text and does not follow a junction out of the roots', async () => {
+  await call('create_directory', { path: opt.fixture });
+  await call('write_file', { path: `${opt.fixture}\\needle.txt`, content: 'alpha\nfind-me-42\n', mode: 'rewrite' });
+  const j = `${opt.fixture}\\outside-link`;
+  await call('start_process', { command: `cmd /c "if not exist "${j}" mklink /J "${j}" C:\\Windows"`, timeout_ms: 15000, shell: 'powershell.exe' });
+  const r = await call('search_files', { path: opt.fixture, content_pattern: 'FIND-ME-42' });
+  expect(!r.isError && r.text.includes('needle.txt'), `text search: ${r.text.slice(0, 160)}`);
+  const s = await call('search_files', { path: opt.fixture, pattern: 'win.ini' });
+  expect(!/win\.ini/i.test(s.text), `followed junction: ${s.text.slice(0, 160)}`);
+  await call('start_process', { command: `cmd /c rmdir "${j}"`, timeout_ms: 15000, shell: 'powershell.exe' });
 });
 await check('file ops latency (write+read+edit, 10x median)', async () => {
   const xs = []; const f = `${opt.fixture}\\lat.txt`;

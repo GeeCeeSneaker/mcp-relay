@@ -28,7 +28,7 @@ Fine-grained local permission policy is not a first-stage goal because the servi
 - One self-controlled VPS as public ingress/relay.
 - Windows node first.
 - Standard remote MCP exposure suitable for ChatGPT.
-- Desktop Commander as the initial local capability provider.
+- Desktop Commander as the initial local capability provider (replaced by the project-owned capability server on 2026-09-29, ADR-0004).
 - Outbound-only node connectivity so the PC does not require public inbound ports.
 - Encrypted node-to-VPS transport.
 - Central TLS/authentication on VPS.

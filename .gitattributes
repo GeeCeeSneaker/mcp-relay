@@ -2,3 +2,4 @@
 config/vps/** text eol=lf
 *.py text eol=lf
 *.patch text eol=lf
+config/vps/*.sh text eol=lf

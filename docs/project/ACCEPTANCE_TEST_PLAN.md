@@ -6,18 +6,20 @@ This plan defines durable behavioral acceptance. Exact commands may evolve with 
 
 Pass when, on the node without tunnel/gateway:
 - MCP initialize/handshake succeeds;
-- `tools/list` returns expected Desktop Commander tools;
+- `tools/list` returns the required tools (DC-compatible names);
 - directory listing succeeds on a dedicated test fixture;
 - file read succeeds;
 - controlled file create/edit/write succeeds;
 - deterministic command returns `mcp-relay-ok`;
-- long-running process can be started and its output observed/terminated using the available Desktop Commander tool contract;
-- **state persistence:** a process started in one HTTP request/session can be read and terminated from a *separate* client connection/session (proves one shared DC instance, ADR-0002 F3);
+- a long-running process can be started, and its output observed and terminated;
+- **state persistence:** a process started in one HTTP request/session can be read and terminated from a *separate* client connection/session;
 - repeated sequential calls remain valid;
-- the local adapter listens on loopback only (no `0.0.0.0`/`::` listener);
-- DC telemetry is disabled in the node configuration.
+- all of the above pass in **both protocol generations** (2025 handshake and 2026-07-28);
+- requests without the bearer token are rejected, and commands cannot read the token;
+- the server listens on loopback only (no `0.0.0.0`/`::` listener);
+- extended checks (`tests/compare-ext.mjs`, Windows): UTF-8/Chinese output, large output, interactive REPL, child-tree termination, allowed-roots enforcement.
 
-Record exact Desktop Commander/adapter versions, any intentional tool restrictions, idle RSS of the node process tree, and any observed third-party egress.
+Record the capability-server version, idle RSS of the node process tree, and confirm there is no third-party egress.
 
 The checks are implemented once in the project smoke client (`tests/`). AT-TUNNEL and AT-PUBLIC re-run the same checks against their URL.
 
