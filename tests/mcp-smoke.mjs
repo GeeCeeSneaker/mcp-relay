@@ -535,7 +535,7 @@ await check('audit log records calls without arguments and stays within its cap'
   expect(lines.some((e) => e.tool === 'remove_path' && e.cls === 'read' && e.err === 'wrong_class'), 'refused cross-class call not audited');
   expect(lines.every((e) => /^[0-9a-f]{8}$/.test(e.boot) && /^[0-9a-f]{8}$/.test(e.call)), 'boot/call ids missing');
   expect(lines.some((e) => e.tool === 'start_process' && Number.isInteger(e.pid)), 'process calls must record the PID');
-  const allowedKeys = new Set(['t', 'boot', 'call', 'tool', 'cls', 'ok', 'ms', 'pid', 'err']);
+  const allowedKeys = new Set(['t', 'boot', 'call', 'tool', 'cls', 'target', 'ok', 'ms', 'pid', 'new_pid', 'err']);
   expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), 'unexpected fields in audit entries');
   expect(!text.includes(opt.fixture) && !text.includes('mcp-relay-ok'), 'arguments/results leaked into the audit log');
   const size = J(await call(b, 'get_file_info', { path: st.audit_log })).size;

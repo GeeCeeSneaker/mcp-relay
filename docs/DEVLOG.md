@@ -1,5 +1,17 @@
 # Development Log
 
+## 2026-10-01 — Node server v2.4.0 + tray 1.3.0: process lifecycle and declared targets (ADR-0008)
+
+- **User requirement:** a scheduled ChatGPT reviewer must restart a long-running local controller that MCP-Relay did not start. A shell `Stop-Process` was blocked in the scheduled environment.
+- **Owner decision:** general primitives plus user-declared targets, instead of three single-purpose tools.
+  - New capabilities: `process_info`, `wait_for`, `target_status` (read); `stop_process`, `target_start`, `target_stop`, `target_restart` (destructive); `spawn_process` (exec).
+  - Processes are named by `ref = pid@creation-time`, which is re-checked before every action, so a reused PID is never hit.
+  - `list_processes` returns `ref`.
+- **Found while designing:** the tray's Job Object killed every process the server started, including detached ones, whenever the server restarted.
+  - The tray now allows breakaway, and the new Windows helper `mcprelay-proc.exe` starts programs outside the job.
+  - A simulated tray confirmed it: without breakaway the resident died with the job; with it, it survived.
+- Evidence: `docs/evidence/P2-node-2.4-process-lifecycle-2026-10-01.md`.
+
 ## 2026-09-29 — Node server v2.3.0: re-read the catalog on failure
 
 - Owner request: tell calling agents that capabilities can change, and to re-read `list_capabilities` when a call fails.

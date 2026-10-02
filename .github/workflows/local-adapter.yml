@@ -31,6 +31,13 @@ jobs:
         run: |
           npm ci --prefix node-runtime --no-fund --no-audit
           npm ci --prefix tests --no-fund --no-audit
+      - name: Build Windows process helper (built-in .NET Framework csc)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:exe /platform:x64 /out:node-runtime\mcprelay-proc.exe /r:System.Web.Extensions.dll app\windows\mcprelay-proc.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Start capability server
         run: |
           # Fresh random bearer token per run; exported for the smoke step.
@@ -45,6 +52,9 @@ jobs:
           # Extra guard folders inside the root, so the smoke suite exercises both guard lists.
           if [ "$RUNNER_OS" = "Windows" ]; then g="$(cygpath -w "$HOME")\\mcprelay-guard"; export MCPRELAY_PROTECTED_DIRS="$g\\prot" MCPRELAY_READONLY_DIRS="$g\\ro"
           else g="$HOME/mcprelay-guard"; export MCPRELAY_PROTECTED_DIRS="$g/prot" MCPRELAY_READONLY_DIRS="$g/ro"; fi
+          # Declared targets for the lifecycle test (the test writes this file itself).
+          if [ "$RUNNER_OS" = "Windows" ]; then t="$(cygpath -w "$HOME")\\mcprelay-targets.json"; else t="$HOME/mcprelay-targets.json"; fi
+          echo "MCPRELAY_TARGETS=$t" >> "$GITHUB_ENV"; export MCPRELAY_TARGETS="$t"
           node node-runtime/server.mjs --port 18001 > server.log 2>&1 &
           for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:18001/healthz && exit 0
@@ -62,6 +72,10 @@ jobs:
             echo "== protocol era: $era"
             node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture "$FIXTURE" --os "$OSNAME" --token-env MCPRELAY_BRIDGE_TOKEN --era "$era" --destructive-ok
           done
+      - name: Process lifecycle (ADR-0008)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then FIXTURE="$(cygpath -w "$HOME")\\mcprelay-lc"; else FIXTURE="$HOME/mcprelay-lc"; fi
+          node tests/process-lifecycle.mjs --url http://127.0.0.1:18001/mcp --token-env MCPRELAY_BRIDGE_TOKEN --fixture "$FIXTURE" --targets "$MCPRELAY_TARGETS"
       - name: Extended checks (Windows)
         if: runner.os == 'Windows'
         run: |

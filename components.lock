@@ -2,10 +2,11 @@
 # npm lockfiles (node-runtime/package-lock.json, tests/package-lock.json) pin the full trees.
 #
 # role               component                                 version    source / status
-M1-capability        node-runtime/server.mjs (project-owned)   2.3.0      repo; single-process capability server, both MCP eras, 16 capabilities behind 5 fixed risk-class tools (ADR-0004, ADR-0007), process handles, stable error codes with catalog-refresh hints, guard lists, size-capped audit log
+M1-capability        node-runtime/server.mjs (project-owned)   2.4.0      repo; single-process capability server, both MCP eras, 24 capabilities behind 5 fixed risk-class tools (ADR-0004, ADR-0007), process handles, identity-checked process lifecycle and declared targets (ADR-0008), stable error codes with catalog-refresh hints, guard lists, size-capped audit log
 M1-sdk               @modelcontextprotocol/server + /node      2.2.0/2.1.0 npm; node-runtime/ (7 packages total, npm audit 0)
 node-runtime         Node.js (bundled in Windows package)      v24.21.0   sha256 158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541 (win-x64 zip)
-M6-node-app          app/windows/MCPRelay.cs (project-owned)   1.2.0      tray app + supervisor; built with Windows .NET Framework 4.x csc (ADR-0003)
+M6-node-app          app/windows/MCPRelay.cs (project-owned)   1.3.0      tray app + supervisor; built with Windows .NET Framework 4.x csc (ADR-0003); server job allows breakaway (ADR-0008)
+M6-proc-helper       app/windows/mcprelay-proc.cs (project-owned) 1.0.0   process helper: inspect / identity-checked stop / detached spawn (ADR-0008); same csc, x64
 M2-tunnel            OpenSSH reverse forward (node ssh.exe -> host sshd)  host      forward-only account; keepalive 10 s x 3 both ends
 M3-gateway           R0Wi/mcp-gateway (MIT per pyproject)       59c1efd00e0c1baea4ed7861429200d2d6be0e83 + patches/mcp-gateway/0001,0002 (ADR-0005/0006)
 M3-runtime           Python (uv-managed)                        3.12       uv 0.12.19 sha256 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8
