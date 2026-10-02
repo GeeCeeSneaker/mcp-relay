@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-10-01 — Node server v2.4.2: start-verification window follows health_timeout_s
+
+- While declaring the first real target (the ADCP Controller): its launcher script runs a preparation step before starting Python. Normally this takes about 5 s; if the venv needs repair (`uv sync`, plus a lock wait of up to 30 s), much longer.
+- The fixed 10 s window for finding the started process was too short for that case. It is now max(10 s, `health_timeout_s`).
+- `targets_help` advises making `match` specific enough that preflight helper processes do not match (e.g. by `cwd`).
+
 ## 2026-10-01 — Node 2.4.0 deployed on the Owner's PC; server v2.4.1: how to declare a target
 
 - **Deployed:** package `cfbeb80`, tray 1.3.0 and server 2.4.0.

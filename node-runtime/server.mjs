@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '2.4.1';
+const VERSION = '2.4.2';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -823,7 +823,8 @@ async function stopInstance(t, p, facts) {
   }
 }
 // Start as declared, then verify: the started process or one of its children (launcher
-// scripts) must match the target within 10 s, stay alive min_alive_s and pass every probe.
+// scripts, which may first run a preparation step) must match the target within
+// max(10 s, health_timeout_s) of the start, stay alive min_alive_s and pass every probe.
 // Failures are reported with the facts; a started process is left running (no rollback).
 async function startTarget(t, facts) {
   const since = Date.now();
@@ -840,14 +841,15 @@ async function startTarget(t, facts) {
     fail(code, message, facts);
   };
   let inst = null;
-  for (const until = Date.now() + 10_000; ;) {
+  const idWindowS = Math.max(10, t.health_timeout_s);
+  for (const until = since + idWindowS * 1000; ;) {
     const tree = subtree(await procsInspect(null), sp.pid, sp.start);
     inst = tree.find((p) => allTrue(checksOf(p, t.match))) || null;
     if (inst || !tree.length || Date.now() > until) {
       if (!inst) {
         facts.new = { ref: sp.start ? `${sp.pid}@${sp.start}` : null, pid: sp.pid }; facts.new_identity_verified = false;
         if (!tree.length) await failWith('start_failed', 'exited_after_start', `Target "${t.name}" started (PID ${sp.pid}) but exited at once; see log_tail.`);
-        await failWith('identity_mismatch', 'started_identity_mismatch', `Target "${t.name}" started (PID ${sp.pid}), but neither it nor a child matches the target's match rule after 10 s. It was left running; the target definition may need fixing.`);
+        await failWith('identity_mismatch', 'started_identity_mismatch', `Target "${t.name}" started (PID ${sp.pid}), but neither it nor a child matches the target's match rule after ${idWindowS} s. It was left running; the target definition may need fixing.`);
       }
       break;
     }
@@ -931,7 +933,7 @@ const TARGETS_HELP = {
     + '"stop"?: {"graceful"?: auto|console_ctrl|close|sigterm|sigint|none (auto), "graceful_timeout_s"?: 0-45 (10), "force"?: bool (false), "tree"?: bool (true)}, '
     + '"health"?: [{"tcp": port} | {"http": "http://127.0.0.1:<port>/...", "status"?: n} | {"file": path}], "health_timeout_s"?: 1-45 (30), "min_alive_s"?: 0-10 (2)}}}',
   rules: [
-    'match identifies the running instance and, after a start, the new one (the started process or a child of it, e.g. behind a launcher script).',
+    'match identifies the running instance and, after a start, the new one: the started process or a child of it (e.g. behind a launcher script), within max(10 s, health_timeout_s). Make match specific enough that helper processes the launcher runs first (preflight checks) do not match, e.g. by cwd.',
     'Without start a target can only be stopped. Without force, a program that ignores the graceful stop is left running and reported (stop_timeout).',
     'Paths are absolute; in JSON, Windows backslashes are doubled.',
   ],
