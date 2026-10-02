@@ -28,7 +28,7 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("MCPRelay")]
 [assembly: System.Reflection.AssemblyProduct("MCPRelay")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0")]
 
 namespace MCPRelay
 {
@@ -156,7 +156,10 @@ namespace MCPRelay
         {
             IntPtr job = CreateJobObject(IntPtr.Zero, null);
             var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            info.Basic.LimitFlags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            // KILL_ON_JOB_CLOSE | BREAKAWAY_OK. Breakaway is only used by the process helper's
+            // spawn (ADR-0008): programs started through it must survive a node server restart.
+            // Everything else (start_process sessions, ssh) stays in the job and dies with it.
+            info.Basic.LimitFlags = 0x2000 | 0x800;
             SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
             AssignProcessToJobObject(job, p.Handle);
             return job;

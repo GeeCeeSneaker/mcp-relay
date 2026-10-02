@@ -2,6 +2,7 @@
 #   MCPRelay.exe            tray app / supervisor (compiled with the .NET Framework csc in Windows)
 #   runtime\node\node.exe   pinned Node.js (SHA-256 verified)
 #   runtime\app\            server.mjs + production node_modules (npm ci from the lockfile)
+#                           + mcprelay-proc.exe, the process helper (ADR-0008)
 #   install.ps1, uninstall.ps1
 #
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 [-OutDir dist\MCPRelay]
@@ -23,6 +24,11 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
   /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll `
   (Join-Path $repo 'app\windows\MCPRelay.cs')
 if ($LASTEXITCODE -ne 0) { throw "csc failed" }
+
+Write-Host "== compile mcprelay-proc.exe (process helper)"
+& $csc /nologo /target:exe /platform:x64 /optimize+ "/out:$OutDir\runtime\app\mcprelay-proc.exe" `
+  /r:System.Web.Extensions.dll (Join-Path $repo 'app\windows\mcprelay-proc.cs')
+if ($LASTEXITCODE -ne 0) { throw "csc failed (mcprelay-proc)" }
 
 Write-Host "== Node.js $NodeVersion"
 $cache = Join-Path $env:LOCALAPPDATA 'MCPRelay-build-cache'

@@ -17,6 +17,7 @@ pnpm-debug.log*
 
 # Build/runtime output
 dist/
+node-runtime/mcprelay-proc.exe
 build/
 runtime/
 logs/

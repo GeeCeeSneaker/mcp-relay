@@ -79,13 +79,33 @@ Operate the app from the tray icon: green = connected, yellow = starting/connect
 - Closing the window hides it to the tray; **Quit** stops the capability server and the tunnel.
 - Logs (all size-capped, the oldest part is dropped):
   - `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log` — app, server and tunnel events; rotates at 2 MB into `.1` (≤ 4 MB).
-  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, `boot` (server process) and `call` ids, capability, class, ok, duration, `pid` for process operations, and the error code. No arguments, paths, commands or output. A client sees the same ids in the result's `_meta["io.mcprelay/call_id"]`. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 9,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
+  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, `boot` (server process) and `call` ids, capability, class, ok, duration, `pid` for process operations (plus `target` and `new_pid` for target operations), and the error code. No arguments, paths, commands or output. A client sees the same ids in the result's `_meta["io.mcprelay/call_id"]`. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 9,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
   - VPS: journald only, capped by `vps-install.sh` at 200 MB / 7 days.
 - File capabilities work only inside the roots, `allowedDirs` in `%APPDATA%\MCPRelay\config.json`. The default is the user profile; the Owner's node uses `"%USERPROFILE%;D:\\"`. Restart services after changing it. The installer keeps these settings.
 - Two guard lists apply inside the roots (list them with `list_capabilities`):
   - **protected** (never read, listed, searched or changed): `%APPDATA%\MCPRelay` (token, key, config), `~\.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, Windows credential/DPAPI stores, and browser profiles;
   - **read-only**: Windows, Program Files, ProgramData, `<drive>:\$Recycle.Bin`, `System Volume Information`, `Recovery`, and MCPRelay's program and logs.
   - Add folders with `protectedDirs` / `readOnlyDirs` (`;`-separated) in config.json.
+- **Declared targets** (ADR-0008): long-running programs that agents may start, stop and restart with `target_restart` etc. Agents cannot run anything else this way. Declare them in `%APPDATA%\MCPRelay\targets.json`. The file is protected, so agents cannot change it, and it is read on every call, so no restart is needed. Example:
+
+  ```json
+  { "targets": { "adcp-controller": {
+      "description": "ADCP controller",
+      "match":  { "executable": "C:\\Program Files\\nodejs\\node.exe", "command_line_contains": "controller.mjs" },
+      "start":  { "executable": "C:\\Program Files\\nodejs\\node.exe", "args": ["D:\\adcp\\controller.mjs"],
+                  "cwd": "D:\\adcp", "env": { "ADCP_MODE": "prod" }, "log": "D:\\adcp\\logs\\controller.out.log" },
+      "stop":   { "graceful": "auto", "graceful_timeout_s": 20, "force": true },
+      "health": [ { "http": "http://127.0.0.1:8710/healthz" }, { "tcp": 8710 } ],
+      "health_timeout_s": 30, "min_alive_s": 2 } } }
+  ```
+
+  Fields:
+  - `match` (required): the full executable path plus `command_line`, `command_line_contains` or `cwd`. It identifies the running instance, and also the new one after a start. A launcher's child process also counts.
+  - `start`: optional. Without it, the target can only be stopped. `log` must be inside the file roots.
+  - `stop`: `graceful` is `auto` (Ctrl+C / Ctrl+Break to the program's own console, else close its window), `console_ctrl`, `close` or `none`. `graceful_timeout_s` is 0–45 (default 10). `force` defaults to false: without it, a program that does not exit gracefully is left running and reported. `tree` defaults to true.
+  - `health`: probes `{tcp: port}`, `{http: url on this machine, status}` and `{file: path}` (modified after the start). `health_timeout_s` is 1–45 (default 30) and `min_alive_s` is 0–10 (default 2).
+
+  A broken file makes target calls fail with `targets_invalid` and the reason; `list_capabilities` shows it too. Programs started by MCPRelay keep running when the app or server restarts. This needs the matching tray version: an older tray reports `outlives_node: false`.
 - Roots and guard lists are a guardrail against mistakes, **not a security boundary**. Shell commands (`invoke_exec`) run with the user's full rights. Your confirmation of exec/destructive calls in ChatGPT is the control.
 - Self-healing:
   - the server or tunnel exiting → restarted with backoff;
@@ -122,6 +142,9 @@ Forgotten gateway password: read it over your own SSH session with `cat /root/mc
 
 ```bash
 node tests/mcp-smoke.mjs --url http://127.0.0.1:18001/mcp --fixture <dir>                 # AT-LOCAL
+node tests/process-lifecycle.mjs --url http://127.0.0.1:18001/mcp --fixture <dir> \
+  --targets <the server's MCPRELAY_TARGETS file>                                           # ADR-0008, on the node itself
+                                                                                           # (overwrites, then deletes, that targets file)
 /opt/mcprelay/gateway/.venv/bin/python tests/oauth-e2e.py --base https://<mcp-domain> \
   --user owner --password-file /root/mcprelay-gateway-password                             # AT-PUBLIC (on VPS)
 ```
