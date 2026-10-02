@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-10-01 — Node 2.4.0 deployed on the Owner's PC; server v2.4.1: how to declare a target
+
+- **Deployed:** package `cfbeb80`, tray 1.3.0 and server 2.4.0.
+- **Production check on the real tray:**
+  - a program started with `spawn_process` reported `outlives_node: true`;
+  - the node server was killed, the tray restarted it, and the program kept serving;
+  - `target_restart` (temporary target, file removed afterwards) restarted it gracefully (Ctrl+C) with the health check passing.
+- **Gap found by reading the catalog as an agent would:** with no targets declared, an agent could tell that the user must declare one, but not how.
+- **Fix in 2.4.1:**
+  - `list_capabilities` `environment.targets_help` gives the file, who edits it, the format with defaults and ranges, the rules, and a valid example (the test checks that the server accepts it);
+  - `unknown_target`, `targets_invalid` and an empty `target_status` tell the agent to ask the user and point to `targets_help`;
+  - a catalog note gives the restart workflow for declared and undeclared programs.
+
 ## 2026-10-01 — Node server v2.4.0 + tray 1.3.0: process lifecycle and declared targets (ADR-0008)
 
 - **User requirement:** a scheduled ChatGPT reviewer must restart a long-running local controller that MCP-Relay did not start. A shell `Stop-Process` was blocked in the scheduled environment.
