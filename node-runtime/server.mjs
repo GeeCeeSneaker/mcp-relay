@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-const VERSION = '2.4.0';
+const VERSION = '2.4.1';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -783,14 +783,14 @@ async function loadTargets() {
   if (!isObj(doc) || !isObj(doc.targets)) fail('targets_invalid', `${TARGETS_FILE} must be {"targets": {"<name>": {...}}}`);
   const problems = []; const out = new Map();
   for (const [name, t] of Object.entries(doc.targets)) { const spec = targetSpec(name, t, problems); if (spec) out.set(name, spec); }
-  if (problems.length) fail('targets_invalid', `${TARGETS_FILE}: ${problems.join('; ')}. The user has to fix this file.`);
+  if (problems.length) fail('targets_invalid', `${TARGETS_FILE}: ${problems.join('; ')}. ${ASK_USER_TARGETS}`);
   return out;
 }
 const busyTargets = new Set(); // in-flight operations per target, so two calls never interleave
 async function onTarget(name, fn) {
   const targets = await loadTargets();
   const t = targets.get(name);
-  if (!t) fail('unknown_target', `Unknown target "${name}". Declared targets: ${[...targets.keys()].join(', ') || 'none'} (in ${TARGETS_FILE}, maintained by the user).`);
+  if (!t) fail('unknown_target', `Unknown target "${name}". Declared targets: ${[...targets.keys()].join(', ') || 'none'}. ${ASK_USER_TARGETS}`);
   if (busyTargets.has(name)) fail('busy', `Another operation on target "${name}" is in progress.`);
   busyTargets.add(name);
   try { return await fn(t); } finally { busyTargets.delete(name); }
@@ -878,12 +878,12 @@ async function targetStatus(a) {
   const targets = await loadTargets();
   const all = await procsInspect(null);
   if (a.target === undefined) {
-    return text(JSON.stringify({ targets_file: TARGETS_FILE, targets: await Promise.all([...targets.values()].map(async (t) => ({
+    return text(JSON.stringify({ targets_file: TARGETS_FILE, ...(targets.size ? {} : { note: `No targets declared. ${ASK_USER_TARGETS}` }), targets: await Promise.all([...targets.values()].map(async (t) => ({
       name: t.name, description: t.description, running: (await instancesOf(t, all)).map(brief), can_start: !!t.start,
     }))) }, null, 1));
   }
   const t = targets.get(a.target);
-  if (!t) fail('unknown_target', `Unknown target "${a.target}". Declared targets: ${[...targets.keys()].join(', ') || 'none'}.`);
+  if (!t) fail('unknown_target', `Unknown target "${a.target}". Declared targets: ${[...targets.keys()].join(', ') || 'none'}. ${ASK_USER_TARGETS}`);
   const inst = await instancesOf(t, all);
   return text(JSON.stringify({
     target: t.name, description: t.description, running: inst.map(identity),
@@ -920,6 +920,29 @@ const targetRestart = (a) => onTarget(a.target, async (t) => {
   facts.status = inst ? 'restarted' : 'started';
   return factsResult(facts);
 });
+// How a target is declared, for agents that must ask the user to add or fix one
+// (catalog environment.targets_help; pointed to by target errors and target_status).
+const ASK_USER_TARGETS = `Agents cannot change ${TARGETS_FILE}; ask the user to add or fix the target there (format: list_capabilities environment.targets_help). The file is read on every call: no restart needed.`;
+const TARGETS_HELP = {
+  file: TARGETS_FILE,
+  edited_by: 'the user only (agents cannot change it); read on every call, so no restart is needed',
+  format: '{"targets": {"<name>": {"description"?, "match": {"executable": <full path>, plus "command_line_contains" | "command_line" | "cwd"}, '
+    + '"start"?: {"executable", "args"?: [...], "cwd"?, "env"?: {...}, "log"?: <file inside file_roots>}, '
+    + '"stop"?: {"graceful"?: auto|console_ctrl|close|sigterm|sigint|none (auto), "graceful_timeout_s"?: 0-45 (10), "force"?: bool (false), "tree"?: bool (true)}, '
+    + '"health"?: [{"tcp": port} | {"http": "http://127.0.0.1:<port>/...", "status"?: n} | {"file": path}], "health_timeout_s"?: 1-45 (30), "min_alive_s"?: 0-10 (2)}}}',
+  rules: [
+    'match identifies the running instance and, after a start, the new one (the started process or a child of it, e.g. behind a launcher script).',
+    'Without start a target can only be stopped. Without force, a program that ignores the graceful stop is left running and reported (stop_timeout).',
+    'Paths are absolute; in JSON, Windows backslashes are doubled.',
+  ],
+  example: WIN
+    ? { targets: { 'my-service': { description: 'example', match: { executable: 'C:\\Program Files\\nodejs\\node.exe', command_line_contains: 'service.mjs' },
+      start: { executable: 'C:\\Program Files\\nodejs\\node.exe', args: ['D:\\app\\service.mjs'], cwd: 'D:\\app', log: 'D:\\app\\logs\\service.log' },
+      stop: { graceful: 'auto', graceful_timeout_s: 20, force: true }, health: [{ http: 'http://127.0.0.1:8080/healthz' }] } } }
+    : { targets: { 'my-service': { description: 'example', match: { executable: '/usr/bin/node', command_line_contains: 'service.mjs' },
+      start: { executable: '/usr/bin/node', args: ['/srv/app/service.mjs'], cwd: '/srv/app', log: '/home/me/app/service.log' },
+      stop: { graceful: 'sigterm', graceful_timeout_s: 20, force: true }, health: [{ http: 'http://127.0.0.1:8080/healthz' }] } } },
+};
 const targetsSummary = () => loadTargets().then((m) => [...m.values()].map((t) => ({ name: t.name, description: t.description, can_start: !!t.start })), (e) => ({ error: e.message }));
 
 // ------------------------------------------------------------ audit log --
@@ -1136,11 +1159,12 @@ function catalog(onlyClass, targets = []) {
     environment: { os: OS_DESC, file_roots: ALLOWED, protected_paths: PROTECTED, read_only_paths: READ_ONLY.concat(WIN ? ['<drive>:\\$Recycle.Bin, System Volume Information, Recovery, Config.Msi, *.sys page/hibernate files'] : []),
       default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
       // Programs the user declared for target_status / target_start / target_stop / target_restart.
-      targets_file: TARGETS_FILE, targets,
+      targets_file: TARGETS_FILE, targets, targets_help: TARGETS_HELP,
       notes: ['File capabilities only work inside file_roots, never touch protected_paths, and only read read_only_paths. This is a guardrail against mistakes, not a security boundary.',
         "Shell commands run with the user's full rights and are not limited by these lists.",
         'Processes are identified by ref "<pid>@<start>" (process_info, list_processes, spawn_process); acting on a ref re-checks it, so a PID reused by another process is never hit.',
-        'targets are declared by the user in targets_file, which agents cannot change; for them prefer target_restart over stop_process + spawn_process.'] },
+        'targets are declared by the user in targets_file, which agents cannot change; for them prefer target_restart over stop_process + spawn_process.',
+        'Restarting a long-running program: if it is a declared target, target_restart (one call). Otherwise process_info (get its ref and start details) -> stop_process (ref) -> spawn_process -> wait_for; for repeated or unattended restarts, ask the user to declare it as a target (environment.targets_help).'] },
     usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older. Capabilities, their classes and arguments can change at any time (server updates). If a call fails with next action refresh_catalog, or its error shows a catalog_version different from yours, call list_capabilities again and retry with the current catalog.',
     classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
     errors: { format: 'Error [<code>]: <message> (next: <action>); also in result _meta["io.mcprelay/error"] = {code, action}',

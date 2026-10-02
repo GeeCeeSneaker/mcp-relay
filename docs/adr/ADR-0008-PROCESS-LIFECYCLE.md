@@ -98,3 +98,14 @@ New codes also include `weak_identity`, `ambiguous_match`, `unknown_target`, `al
 - **Agent-supplied restart profile in the destructive class:** it is arbitrary execution, see Problem 2. It remains possible as `stop_process` + `spawn_process` (exec) + `wait_for`.
 - **PowerShell `Add-Type` instead of a helper:** it adds 1–2 s per call, and terminating by PID leaves a gap between check and action.
 - **WMI `Win32_Process.Create` to escape the job:** it cannot redirect output, and it starts the process outside the user's normal process tree.
+
+## Update 2026-10-01 — v2.4.1 (discoverability)
+
+- An agent must be able to tell the user how to declare a target, since agents cannot write the file.
+- `list_capabilities` `environment.targets_help` holds:
+  - the file and who edits it;
+  - the format, with defaults and ranges;
+  - the rules;
+  - a valid example for the node's OS.
+- `unknown_target`, `targets_invalid` and an empty `target_status` point to it.
+- A catalog note gives the restart workflow: `target_restart` for declared targets; otherwise `process_info` → `stop_process` → `spawn_process` → `wait_for`, or ask the user to declare the program.

@@ -239,9 +239,20 @@ await check('target_stop stops it; a second stop reports not_running', async () 
   expect(again.ok && again.facts.status === 'not_running', brief(again.text));
 });
 
+await check('the catalog explains how a target is declared, and its example is valid', async () => {
+  const help = (await cat()).environment.targets_help;
+  expect(help?.file === (await cat()).environment.targets_file && /"targets"/.test(help.format) && help.example?.targets, JSON.stringify(help));
+  await fs.writeFile(opt.targets, JSON.stringify(help.example));
+  const r = await call('target_status', {});
+  expect(r.ok && r.facts.targets.length === 1 && r.facts.targets[0].running.length === 0, brief(r.text));
+  await fs.writeFile(opt.targets, JSON.stringify({ targets: {} }));
+  const empty = await call('target_status', {});
+  expect(empty.ok && /No targets declared/.test(empty.facts.note) && /targets_help/.test(empty.facts.note), brief(empty.text));
+});
+
 await check('unknown and invalid targets are refused', async () => {
   const u = await call('target_restart', { target: 'nope' });
-  expect(u.code === 'unknown_target', brief(u.text));
+  expect(u.code === 'unknown_target' && /ask the user/.test(u.text) && /targets_help/.test(u.text), brief(u.text));
   await fs.writeFile(opt.targets, JSON.stringify({ targets: { weak: { match: { name: 'node' } } } }));
   const i = await call('target_status', {});
   expect(i.code === 'targets_invalid' && /full executable path/.test(i.text), brief(i.text));
