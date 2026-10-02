@@ -57,7 +57,7 @@ Build general primitives instead of three single-purpose tools, plus targets the
      1. verify the running instance (optionally `expect_ref`);
      2. stop it per the declared policy;
      3. start it as declared;
-     4. the started process or one of its children must match the target within 10 s;
+     4. the started process or one of its children must match the target within max(10 s, `health_timeout_s`) (launcher scripts may run a preparation step first; changed in 2.4.2, was a fixed 10 s);
      5. it must stay alive `min_alive_s` and pass every probe within `health_timeout_s`.
    - Calls on the same target are serialized. A partial outcome is reported and never rolled back: `stop_failed`, `stopped_not_started`, `exited_after_start`, `started_identity_mismatch`, `started_unhealthy`.
 5. **Structured facts.**
