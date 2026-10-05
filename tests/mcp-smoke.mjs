@@ -54,6 +54,8 @@ const REQUIRED_CAPS = [
   'node_status', 'list_directory', 'read_file', 'write_file', 'edit_block', 'create_directory', 'move_file',
   'remove_path', 'get_file_info', 'search_files',
   'start_process', 'read_process_output', 'interact_with_process', 'force_terminate', 'list_sessions', 'list_processes',
+  'git_status', 'git_diff', 'git_history', 'git_refs', 'git_worktrees', 'git_object_info',
+  'git_fetch', 'git_checkout', 'git_ref_update', 'git_worktree_update', 'git_index_update', 'git_commit', 'git_integrate',
 ];
 
 let failures = 0;
@@ -362,7 +364,7 @@ await check('class tools carry titles and risk annotations', async () => {
   expect(ann('invoke_exec').destructiveHint === true && ann('invoke_exec').openWorldHint === true, 'invoke_exec must be destructive/open-world');
   const c = await catalog(b);
   const cls = (n) => c.capabilities.find((x) => x.name === n)?.class;
-  expect(cls('read_file') === 'read' && cls('create_directory') === 'write' && cls('remove_path') === 'destructive' && cls('start_process') === 'exec', 'capability classes changed');
+  expect(cls('read_file') === 'read' && cls('create_directory') === 'write' && cls('git_commit') === 'write' && cls('git_status') === 'read' && cls('remove_path') === 'destructive' && cls('start_process') === 'exec', 'capability classes changed');
 });
 
 await check('tool descriptions carry the node environment', async () => {
@@ -535,8 +537,9 @@ await check('audit log records calls without arguments and stays within its cap'
   expect(lines.some((e) => e.tool === 'remove_path' && e.cls === 'read' && e.err === 'wrong_class'), 'refused cross-class call not audited');
   expect(lines.every((e) => /^[0-9a-f]{8}$/.test(e.boot) && /^[0-9a-f]{8}$/.test(e.call)), 'boot/call ids missing');
   expect(lines.some((e) => e.tool === 'start_process' && Number.isInteger(e.pid)), 'process calls must record the PID');
-  const allowedKeys = new Set(['t', 'boot', 'call', 'tool', 'cls', 'target', 'ok', 'ms', 'pid', 'new_pid', 'err']);
-  expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), 'unexpected fields in audit entries');
+  const allowedKeys = new Set(['t', 'boot', 'call', 'tool', 'cls', 'target', 'ok', 'ms', 'pid', 'new_pid', 'git_head', 'err']);
+  expect(lines.every((e) => Object.keys(e).every((k) => allowedKeys.has(k))), `unexpected fields in audit entries: ${[...new Set(lines.flatMap(Object.keys))].filter((k) => !allowedKeys.has(k))}`);
+  expect(lines.every((e) => e.git_head === undefined || /^[0-9a-f]{40,64}$/.test(e.git_head)), 'git_head must be a commit id');
   expect(!text.includes(opt.fixture) && !text.includes('mcp-relay-ok'), 'arguments/results leaked into the audit log');
   const size = J(await call(b, 'get_file_info', { path: st.audit_log })).size;
   expect(size <= st.audit_max_bytes, `audit log ${size} > cap ${st.audit_max_bytes}`);

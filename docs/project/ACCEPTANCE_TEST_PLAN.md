@@ -22,7 +22,14 @@ Pass when, on the node without tunnel/gateway:
 - all of the above pass in **both protocol generations** (2025 handshake and 2026-07-28);
 - requests without the bearer token are rejected, and commands cannot read the token;
 - the server listens on loopback only (no `0.0.0.0`/`::` listener);
-- extended checks (`tests/compare-ext.mjs`, Windows): UTF-8/Chinese output, large output, interactive REPL, child-tree termination, allowed-roots enforcement.
+- extended checks (`tests/compare-ext.mjs`, Windows): UTF-8/Chinese output, large output, interactive REPL, child-tree termination, allowed-roots enforcement;
+- local Git operations (`tests/git-ops.mjs`, ADR-0009, Windows and Linux), on disposable repositories:
+  - every read reports exact identities;
+  - every change with a stale expected state, a dirty tree or a conflict changes nothing, or is aborted back to the verified previous state;
+  - escapes (link or `.git` file pointing outside the roots) and Git options in arguments are refused;
+  - checkout never overwrites ignored files, and worktree removal never deletes untracked or ignored files;
+  - repository hooks never run;
+  - the audit log records the resulting commit but never the message.
 
 Record the capability-server version, idle RSS of the node process tree, and confirm there is no third-party egress.
 

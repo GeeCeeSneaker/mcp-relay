@@ -79,13 +79,18 @@ Operate the app from the tray icon: green = connected, yellow = starting/connect
 - Closing the window hides it to the tray; **Quit** stops the capability server and the tunnel.
 - Logs (all size-capped, the oldest part is dropped):
   - `%LOCALAPPDATA%\MCPRelay\logs\mcprelay.log` — app, server and tunnel events; rotates at 2 MB into `.1` (≤ 4 MB).
-  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, `boot` (server process) and `call` ids, capability, class, ok, duration, `pid` for process operations (plus `target` and `new_pid` for target operations), and the error code. No arguments, paths, commands or output. A client sees the same ids in the result's `_meta["io.mcprelay/call_id"]`. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 9,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
+  - `%LOCALAPPDATA%\MCPRelay\logs\audit.log` — one JSON line per tool call: time, `boot` (server process) and `call` ids, capability, class, ok, duration, `pid` for process operations (plus `target` and `new_pid` for target operations, `git_head` for Git changes), and the error code. No arguments, paths, commands or output. A client sees the same ids in the result's `_meta["io.mcprelay/call_id"]`. Rotates at 1 MiB into `.1` (≤ 2 MiB, roughly 9,000 calls). `MCPRELAY_AUDIT_MAX_BYTES` changes the cap; `node_status` shows the path.
   - VPS: journald only, capped by `vps-install.sh` at 200 MB / 7 days.
 - File capabilities work only inside the roots, `allowedDirs` in `%APPDATA%\MCPRelay\config.json`. The default is the user profile; the Owner's node uses `"%USERPROFILE%;D:\\"`. Restart services after changing it. The installer keeps these settings.
 - Two guard lists apply inside the roots (list them with `list_capabilities`):
   - **protected** (never read, listed, searched or changed): `%APPDATA%\MCPRelay` (token, key, config), `~\.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, Windows credential/DPAPI stores, and browser profiles;
   - **read-only**: Windows, Program Files, ProgramData, `<drive>:\$Recycle.Bin`, `System Volume Information`, `Recovery`, and MCPRelay's program and logs.
   - Add folders with `protectedDirs` / `readOnlyDirs` (`;`-separated) in config.json.
+- **Local Git operations** (ADR-0009): the `git_*` capabilities use the installed Git (2.25 or newer; `node_status` shows `git_version`; set `MCPRELAY_GIT` if `git` is not on PATH).
+  - They work on repositories inside the roots.
+  - Repository hooks never run through them.
+  - Changes go through `invoke_write`, and each needs the expected state from `git_status`.
+  - Not available through them: reset --hard, clean, force, rebase and push. Those still need run commands (`invoke_exec`) and the user's approval.
 - **Declared targets** (ADR-0008): long-running programs that agents may start, stop and restart with `target_restart` etc. Agents cannot run anything else this way. Declare them in `%APPDATA%\MCPRelay\targets.json`. The file is protected, so agents cannot change it, and it is read on every call, so no restart is needed. Example:
 
   ```json
