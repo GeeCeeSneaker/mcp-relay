@@ -33,8 +33,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import { GIT_ERRORS, gitCapabilities } from './git.mjs';
 
-const VERSION = '2.4.2';
+const VERSION = '2.5.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -153,6 +154,7 @@ const ERRORS = {
   start_failed: 'ask_user', health_check_failed: 'ask_user', targets_invalid: 'ask_user',
   timeout: 'retry_later', busy: 'retry_later',
   internal_error: 'stop', helper_missing: 'stop',
+  ...GIT_ERRORS, // local Git operations (git.mjs)
 };
 const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
 // facts: optional structured record of what was found or done before the failure
@@ -1000,6 +1002,12 @@ const envNote = (kind) => kind === 'exec'
   ? ` [Node "${NODE_NAME}", ${OS_DESC}. Default shell: ${shellLabel()}${WIN ? ', UTF-8 output' : ''}; other shells via args.shell: ${SHELLS.available.filter((s) => s.shell !== SHELLS.default).map((s) => `${s.shell} (${s.note})`).join(', ') || 'none'}. Working directory: ${homedir()}. Commands run with the user's full rights and are NOT limited to the file roots]`
   : ` [Node "${NODE_NAME}", ${OS_DESC}. File capabilities only work inside: ${ALLOWED.join('; ')}; system folders are read-only and credential/MCPRelay config folders are off-limits (see list_capabilities)]`;
 
+// ------------------------------------------------- local Git (ADR-0009) --
+// Structured Git reads (class read) and non-lossy Git changes (class write); see git.mjs.
+const GITOPS = gitCapabilities({ allowedPath, fail, factsResult, CapError, norm, holdsGuarded,
+  // core.hooksPath for every Git call: a folder that does not exist, inside this server's read-only code folder.
+  noHooksDir: path.join(path.dirname(fileURLToPath(import.meta.url)), 'no-git-hooks') });
+
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = { type: 'string' }; const num = { type: 'number' };
@@ -1011,6 +1019,7 @@ const TOOLS = {
       allowed_dirs: ALLOWED, default_shell: SHELLS.default, shells: SHELLS.available,
       sessions: sessions.size, running_sessions: running(), audit_log: AUDIT || null, audit_max_bytes: AUDIT ? AUDIT_MAX : null,
       process_helper: WIN ? (await fs.stat(HELPER).then(() => HELPER, () => null)) : 'not needed (Linux /proc)', targets_file: TARGETS_FILE,
+      git_version: GITOPS.environment().version,
     }, null, 2)) },
   list_directory: { d: 'List files and directories ([DIR]/[FILE]) up to `depth` levels (default 2).', s: P({ path: str, depth: num }, ['path']),
     run: async (a, signal) => text((await listDir(await allowedPath(a.path), Math.min(a.depth ?? 2, 10), '', [], { deadline: Date.now() + LIST_BUDGET_MS, signal })).join('\n') || '(empty directory)') },
@@ -1098,6 +1107,7 @@ const TOOLS = {
   target_stop: { d: 'Stop the running instance of a declared target with its declared stop policy. expect_ref: act only if that exact instance is the running one. Not running is reported as status not_running.', s: P({ target: str, expect_ref: str }, ['target']), run: targetStop },
   target_restart: { d: 'Restart a declared target in one call: verify the running instance (expect_ref: must be that exact instance), stop it per the declared policy, start it as declared, verify the new identity and health checks. Returns status (restarted / started), old and new identity, stop_method, health_check. Partial outcomes are reported, never rolled back: stop_failed, stopped_not_started, exited_after_start, started_identity_mismatch, started_unhealthy. start_if_stopped (default true).',
     s: P({ target: str, expect_ref: str, start_if_stopped: { type: 'boolean' } }, ['target']), run: targetRestart },
+  ...GITOPS.tools,
 };
 // ---------------------------------------------------------- risk classes --
 // Clients (ChatGPT) cache a connector's tool list, so the exposed tools are a
@@ -1107,9 +1117,11 @@ const TOOLS = {
 // user before destructive or open-world actions. The server enforces classes:
 // a capability is only run through its own class tool.
 const CLASSES = {
-  read: { title: 'Read (no changes)', covers: 'reads files, directories, file info, process output, command sessions, system processes, process identities, target status and node status, or waits for a condition; never changes anything',
+  read: { title: 'Read (no changes)', covers: 'reads files, directories, file info, process output, command sessions, system processes, process identities, target status, node status and local Git repository state, or waits for a condition; never changes anything',
     hints: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  write: { title: 'Create (non-destructive)', covers: 'creates things without overwriting, changing or deleting existing data',
+  // ADR-0009: non-lossy changes. Git changes are listed here because every one names the
+  // exact state it expects (compare-and-swap) and none forces or discards anything.
+  write: { title: 'Create or change without data loss', covers: 'creates directories, and changes local Git repositories (fetch, checkout, branches/tags, worktrees, staging, commit, merge/cherry-pick/revert) only from an exact expected state, never forcing, overwriting or discarding anything; no push',
     hints: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   destructive: { title: 'Modify or delete files, stop or restart processes', covers: 'writes, overwrites, edits, moves or deletes files and folders, stops processes by verified identity, or starts, stops and restarts targets the user declared',
     hints: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
@@ -1142,6 +1154,7 @@ const META = {
   start_process:         ['Run command',            'exec'],
   interact_with_process: ['Send input to process',  'exec'],
   spawn_process:         ['Start program',          'exec'],
+  ...GITOPS.meta,
 };
 const invokeTool = (cls) => `invoke_${cls}`;
 const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
@@ -1162,11 +1175,14 @@ function catalog(onlyClass, targets = []) {
       default_shell: shellLabel(), shells: SHELLS.available, working_directory: homedir(),
       // Programs the user declared for target_status / target_start / target_stop / target_restart.
       targets_file: TARGETS_FILE, targets, targets_help: TARGETS_HELP,
+      // Local Git operations (git_* capabilities).
+      git: GITOPS.environment(),
       notes: ['File capabilities only work inside file_roots, never touch protected_paths, and only read read_only_paths. This is a guardrail against mistakes, not a security boundary.',
         "Shell commands run with the user's full rights and are not limited by these lists.",
         'Processes are identified by ref "<pid>@<start>" (process_info, list_processes, spawn_process); acting on a ref re-checks it, so a PID reused by another process is never hit.',
         'targets are declared by the user in targets_file, which agents cannot change; for them prefer target_restart over stop_process + spawn_process.',
-        'Restarting a long-running program: if it is a declared target, target_restart (one call). Otherwise process_info (get its ref and start details) -> stop_process (ref) -> spawn_process -> wait_for; for repeated or unattended restarts, ask the user to declare it as a target (environment.targets_help).'] },
+        'Restarting a long-running program: if it is a declared target, target_restart (one call). Otherwise process_info (get its ref and start details) -> stop_process (ref) -> spawn_process -> wait_for; for repeated or unattended restarts, ask the user to declare it as a target (environment.targets_help).',
+        'Local Git work: git_status first, then a write-class git_* capability with the values it returned as expected_* (environment.git.rules). Prefer these over Git commands run through invoke_exec.'] },
     usage: 'Call the tool named in invoke_with (a gateway may prefix it, e.g. "<node>_invoke_read") with {"capability": name, "args": {...}}, args following args_schema. This list is current; tool descriptions cached by a client may be older. Capabilities, their classes and arguments can change at any time (server updates). If a call fails with next action refresh_catalog, or its error shows a catalog_version different from yours, call list_capabilities again and retry with the current catalog.',
     classes: Object.fromEntries(Object.entries(CLASSES).map(([c, v]) => [c, { invoke_with: invokeTool(c), covers: v.covers }])),
     errors: { format: 'Error [<code>]: <message> (next: <action>); also in result _meta["io.mcprelay/error"] = {code, action}',
@@ -1223,6 +1239,9 @@ const auditOf = (f) => {
   if (f.target) out.target = f.target;
   if (Number.isInteger(pid)) out.pid = pid;
   if (Number.isInteger(f.new?.pid)) out.new_pid = f.new.pid;
+  // Git changes: the resulting commit (an identity, not content).
+  const head = f.commit ?? f.new?.head;
+  if (typeof head === 'string' && /^[0-9a-f]{40,64}$/.test(head)) out.git_head = head;
   return out;
 };
 
@@ -1265,8 +1284,9 @@ function mcpServer() {
   server.setRequestHandler('tools/call', async (req) => {
     const tool = req.params.name; const params = req.params.arguments || {}; const started = Date.now();
     const callId = randomBytes(4).toString('hex');
-    const done = ({ tool: name, cls, err, pid, target, new_pid: newPid }) => audit({ t: new Date(started).toISOString(), boot: BOOT_ID, call: callId, tool: name,
-      ...(cls ? { cls } : {}), ...(target ? { target } : {}), ok: !err, ms: Date.now() - started, ...(pid ? { pid } : {}), ...(newPid ? { new_pid: newPid } : {}), ...(err ? { err } : {}) });
+    const done = ({ tool: name, cls, err, pid, target, new_pid: newPid, git_head: gitHead }) => audit({ t: new Date(started).toISOString(), boot: BOOT_ID, call: callId, tool: name,
+      ...(cls ? { cls } : {}), ...(target ? { target } : {}), ok: !err, ms: Date.now() - started, ...(pid ? { pid } : {}), ...(newPid ? { new_pid: newPid } : {}),
+      ...(gitHead ? { git_head: gitHead } : {}), ...(err ? { err } : {}) });
     const tag = (r) => ({ ...r, _meta: { ...(r._meta || {}), 'io.mcprelay/call_id': `${BOOT_ID}-${callId}` } });
     if (tool === 'list_capabilities') {
       if (params.class !== undefined && !Object.hasOwn(CLASSES, params.class)) {
@@ -1318,8 +1338,8 @@ process.on('unhandledRejection', (e) => log('unhandled rejection:', e?.stack || 
 process.on('uncaughtException', (e) => { log('uncaught exception, exiting for a clean restart:', e?.stack || e); shutdown(1); });
 
 http.on('error', (e) => { log('listen error:', e.message); process.exit(1); }); // e.g. port busy -> supervisor retries
-await detectShells(); // before listening, so the first tools/list already names the right shell
+await Promise.all([detectShells(), GITOPS.detect()]); // before listening, so the first tools/list already names the right shell and Git
 http.listen(Number(opt.port), opt.host, () => {
-  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}; default shell: ${shellLabel()}; audit log: ${AUDIT || 'off'}`);
+  log(`MCP endpoint http://${opt.host}:${opt.port}${opt.path} (v${VERSION}); allowed dirs: ${ALLOWED.join(', ')}; default shell: ${shellLabel()}; git: ${GITOPS.environment().version || 'not available'}; audit log: ${AUDIT || 'off'}`);
   if (!TOKEN_DIGEST) log('WARNING: MCPRELAY_BRIDGE_TOKEN not set; /mcp accepts unauthenticated local requests');
 });

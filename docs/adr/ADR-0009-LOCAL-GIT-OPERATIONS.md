@@ -1,7 +1,7 @@
 # ADR-0009 — Local Git Operations Capability Family
 
 - Date: 2026-10-05
-- Status: `PROPOSED` (Owner approved the direction; exact contract must pass real ChatGPT Scheduled Task proof)
+- Status: `PROPOSED` (Owner approved the direction; exact contract must pass real ChatGPT Scheduled Task proof). Implemented in node server 2.5.0.
 - Change class: C2 — node capability/risk-class interface change. No new service, daemon, database, queue, workflow engine or control plane.
 - Tracking: #29
 
@@ -30,26 +30,42 @@ This capability family is about **local Git repository state**. GitHub API opera
 
 ## Risk model
 
-ADR-0007 currently groups capabilities into read, write, destructive and exec dispatchers. That is insufficiently precise for normal local version-control operations.
+ADR-0007 groups capabilities into read, write, destructive and exec dispatchers.
 
-Add one fixed dispatcher:
+**Owner decision (2026-10-05): no new dispatcher.** An earlier draft of this ADR added a separate `invoke_git` tool. Instead:
+- structured Git reads go to `invoke_read`;
+- the bounded Git changes go to the existing **`invoke_write`**.
 
-```text
-invoke_git({ capability, args })
-```
+The `write` class is redefined from "creates without changing existing data" to **"changes without data loss"**. It covers creating directories and the Git changes below. Every one of them:
+- names the exact state it expects;
+- never forces, overwrites or discards anything.
 
-`invoke_git` is a **bounded local version-control mutation class**.
+Overwriting or deleting stays in `destructive`.
+
+Why:
+
+| | readOnly | destructive | idempotent | openWorld |
+|---|---|---|---|---|
+| `invoke_write` (existing) | false | false | true | false |
+| the `invoke_git` draft | false | false | false | false |
+
+- The MCP annotations, which is what a client sees of a tool's risk, were identical except `idempotentHint`. Even that holds in effect: every Git change is compare-and-swap on the expected state, so repeating a call is refused with `stale_state` instead of applying twice.
+- A separate tool would therefore not be treated differently by clients.
+- Adding it would have changed the fixed tool set, which forces every ChatGPT connector to be refreshed or re-added (ADR-0007). Keeping the set means no connector change.
+- One dispatcher less is less to maintain.
+
+Accepted cost: a client that grants `invoke_write` grants the Git changes too; they cannot be allowed separately per tool. If the Scheduled Task proof shows that separate granting is needed, a separate class can still be split off then.
 
 Risk ordering for the supported operations is intended to be approximately:
 
 ```text
 read-only
-  < bounded local Git mutation
-  < generic filesystem write/delete/destructive mutation
+  < bounded local Git change (class write)
+  < generic filesystem write/delete/destructive change
   < open-world shell/program execution
 ```
 
-The reason is not that every Git command is safe. It is that the operations admitted to `invoke_git` are deliberately limited to:
+The reason is not that every Git command is safe. It is that the operations admitted to the write class are deliberately limited to:
 
 - one identified repository under allowed roots;
 - versioned/ref/index/worktree state with structured identities;
@@ -57,11 +73,9 @@ The reason is not that every Git command is safe. It is that the operations admi
 - non-force, non-lossy behavior;
 - deterministic verification after mutation.
 
-`invoke_git` must be truthfully annotated as mutating (`readOnlyHint=false`) and non-open-world (`openWorldHint=false`). It should not be marked destructive if the implementation continues to exclude the destructive variants below. Exact MCP annotations follow the pinned SDK contract.
-
 ### Operations that do NOT qualify for the low-risk Git class
 
-The following remain outside `invoke_git` v1 because they can intentionally discard data, rewrite published/local history without recovery guarantees, or create broader external effects:
+The following remain outside the Git capabilities (v1) because they can intentionally discard data, rewrite published/local history without recovery guarantees, or create broader external effects:
 
 - `reset --hard` or equivalent worktree/index discard;
 - `git clean` / untracked deletion;
@@ -111,7 +125,7 @@ Local Git inspection should be structured and not require shell parsing. Impleme
 
 Implementation may merge read capabilities if one smaller structured schema covers the same use cases cleanly; do not mirror every Git subcommand as a tool.
 
-### B. Mutating capabilities — through `invoke_git`
+### B. Mutating capabilities — through `invoke_write`
 
 The initial implementation should cover the normal local workflow as a coherent family.
 
@@ -235,7 +249,7 @@ This ADR does not claim the new risk class bypasses ChatGPT approval or safety b
 A real Scheduled Task experiment must compare representative operations performed through:
 
 - generic `invoke_exec/start_process` shell/Git;
-- structured `invoke_git` capabilities.
+- the structured Git capabilities through `invoke_write`.
 
 At minimum test:
 
@@ -252,11 +266,11 @@ Record whether each action:
 - is blocked before MCPRelay;
 - reaches MCPRelay and fails for server-side contract reasons.
 
-If `invoke_git` remains blocked for all meaningful mutations, do not respond by wrapping commands more narrowly. Reassess whether the separate class still adds enough safety/clarity to justify its connector cost.
+If the structured Git changes remain blocked for all meaningful mutations, do not respond by wrapping commands more narrowly. Reassess whether the separate class still adds enough safety/clarity to justify its connector cost.
 
 ## Minimalism
 
-This ADR adds one capability family and one fixed dispatcher because multiple normal local Git actions share the same demonstrated trust/scoping model.
+This ADR adds one capability family, in the existing read and write classes, because multiple normal local Git actions share the same demonstrated trust/scoping model.
 
 It does **not** add:
 
@@ -269,3 +283,59 @@ It does **not** add:
 - remote GitHub automation.
 
 The family is complete enough for routine local repository work, but destructive/force/remote-write variants stay out of the low-risk class by design.
+
+## Implementation (node server 2.5.0)
+
+The code is in `node-runtime/git.mjs` and the tests in `tests/git-ops.mjs`. The evidence is in `docs/evidence/P2-node-2.5-local-git-2026-10-05.md`. Contract decisions made while implementing:
+
+**Git and its configuration**
+- **Git:** the system Git is used (`MCPRELAY_GIT` overrides it), version 2.25 or newer. The catalog reports it in `environment.git`, and calls fail with `git_missing` without it.
+- **No caller argv.** Revisions, ref names and paths are validated as data:
+  - no leading `-`, no whitespace;
+  - paths only after `--` and as literal pathspecs.
+- **Repository content never runs code.** Every Git call sets:
+  - `core.hooksPath` to a folder that does not exist, so no hooks run, including hooks that a repository (husky) keeps in its own content;
+  - `core.fsmonitor=false`;
+  - `--no-ext-diff --no-textconv`;
+  - no submodule recursion and `protocol.ext.allow=never`.
+- **User-configured programs still apply:** credential helpers, LFS filters, merge drivers and signing. Agents cannot change Git config through the write class.
+
+**Repository scope**
+- The working tree, git dir and common dir must all resolve, as real paths, inside the file roots. So a link or a `.git` file that points outside is refused.
+- Changes are also refused if the working tree contains a protected or read-only folder.
+
+**Expected state and fingerprints**
+- Expected state comes from `git_status`:
+  - `index_fingerprint` is the SHA-256 of every index entry (`ls-files -s`);
+  - `worktree_fingerprint` is the SHA-256 of the content of every unstaged, untracked or conflicted path.
+- A name such as a branch, tag or `origin/main` must be pinned with `expected_target`/`expected_source`, unless a full SHA is given.
+
+**Per operation**
+- **`git_checkout`:**
+  - uses `git switch --no-overwrite-ignore`, so ignored files are never overwritten either;
+  - `preserve_exact` verifies afterwards that every dirty path has the same index entry and the same content.
+- **`git_commit`:**
+  - is built with plumbing (`write-tree`, `commit-tree`), then `update-ref HEAD <new> <expected_head>`;
+  - the branch moves only by compare-and-swap, and no hook or editor runs.
+- **`git_ref_update`:**
+  - covers branches and lightweight tags;
+  - moves and deletes are compare-and-swap through `update-ref --stdin`;
+  - "no commit lost": a move must be a fast-forward, or the old commit must stay reachable from a worktree HEAD, another local branch or (branches only) the upstream; the same holds for delete;
+  - a branch checked out in a worktree is not moved or deleted (`ref_in_use`).
+- **`git_worktree_update`:**
+  - `add` and `remove` only; prune is not offered;
+  - removal is refused if the worktree has untracked or ignored files, because `git worktree remove` would delete ignored files silently.
+- **`git_integrate`:**
+  - on failure an operation in progress is aborted;
+  - the previous HEAD, branch and index are verified before `conflict` (or `nothing_to_commit` for an empty pick) is reported;
+  - if that cannot be proven, the result is `partial_state`.
+
+**Concurrency and new error codes**
+- One change at a time per repository (common dir); another is refused with `busy`.
+- New error codes:
+  - `not_a_repository`, `stale_state`, `ref_in_use`, `nothing_to_commit` → fix_args;
+  - `dirty_worktree`, `conflict`, `not_merged`, `operation_in_progress`, `partial_state`, `git_failed`, `git_missing` → ask_user;
+  - `fetch_failed` → retry_later.
+- The audit line of a Git change carries `git_head` (the resulting commit), never messages, paths or diffs.
+
+**Not in this version:** rebase, annotated tag creation, worktree prune, submodule operations.

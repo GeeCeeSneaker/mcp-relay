@@ -1,7 +1,7 @@
 # Builds the self-contained Windows node package into <OutDir>:
 #   MCPRelay.exe            tray app / supervisor (compiled with the .NET Framework csc in Windows)
 #   runtime\node\node.exe   pinned Node.js (SHA-256 verified)
-#   runtime\app\            server.mjs + production node_modules (npm ci from the lockfile)
+#   runtime\app\            server.mjs, git.mjs + production node_modules (npm ci from the lockfile)
 #                           + mcprelay-proc.exe, the process helper (ADR-0008)
 #   install.ps1, uninstall.ps1
 #
@@ -49,7 +49,7 @@ Copy-Item "$nodeDir\node.exe", "$nodeDir\LICENSE" "$OutDir\runtime\node\"
 Remove-Item -Recurse -Force $tmp
 
 Write-Host "== capability server + production dependencies (npm ci)"
-foreach ($f in 'server.mjs', 'package.json', 'package-lock.json') {
+foreach ($f in 'server.mjs', 'git.mjs', 'package.json', 'package-lock.json') {
   Copy-Item (Join-Path $repo "node-runtime\$f") "$OutDir\runtime\app\"
 }
 Push-Location "$OutDir\runtime\app"

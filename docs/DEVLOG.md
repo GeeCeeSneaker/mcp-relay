@@ -1,5 +1,25 @@
 # Development Log
 
+## 2026-10-05 — Node server v2.5.0: local Git operations (ADR-0009 / WO-0007)
+
+- **What it adds:** 13 Git capabilities.
+  - Reads through `invoke_read`: `git_status`, `git_diff`, `git_history`, `git_refs`, `git_worktrees`, `git_object_info`.
+  - Changes through `invoke_write`: `git_fetch`, `git_checkout`, `git_ref_update`, `git_worktree_update`, `git_index_update`, `git_commit`, `git_integrate`.
+  - A new module, `node-runtime/git.mjs`.
+- **Owner decision: no separate `invoke_git` tool.** Its MCP annotations would have equalled `invoke_write`'s, and a new fixed tool forces every ChatGPT connector to be re-added. The write class is redefined as "changes without data loss". ADR-0009 is amended.
+- **Contract:**
+  - Every change takes the exact state it expects (HEAD, branch, ref value, index/worktree fingerprints from `git_status`); a stale state changes nothing (`stale_state`).
+  - Ref and commit updates are atomic compare-and-swap.
+  - Nothing is forced or discarded, and a ref change may not lose commits.
+  - Merge, cherry-pick and revert conflicts are aborted and the previous state verified.
+- **Hooks never run:** `core.hooksPath` points to a folder that does not exist, so even hooks kept in the repository content are skipped. External diff, textconv, fsmonitor and submodule recursion are off too.
+- **Git behaviours found while implementing:**
+  - checkout and merge overwrite ignored files by default; MCPRelay passes `--no-overwrite-ignore`;
+  - `git worktree remove` silently deletes ignored files; MCPRelay refuses instead.
+- **Tests:** `tests/git-ops.mjs` (25 checks) runs in CI on Windows and Linux. Existing suites are unchanged and green.
+- **Pending:** the real ChatGPT Scheduled Task comparison (Owner). Until then ADR-0009 stays `PROPOSED` and WO-0007 `IN_PROGRESS`.
+- Evidence: `docs/evidence/P2-node-2.5-local-git-2026-10-05.md`.
+
 ## 2026-10-01 — Node server v2.4.2: start-verification window follows health_timeout_s
 
 - While declaring the first real target (the ADCP Controller): its launcher script runs a preparation step before starting Python. Normally this takes about 5 s; if the venv needs repair (`uv sync`, plus a lock wait of up to 30 s), much longer.

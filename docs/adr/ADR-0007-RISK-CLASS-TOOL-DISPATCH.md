@@ -16,7 +16,7 @@ The node server (v2.0.0) exposes a **fixed set of five tools**:
 |---|---|---|
 | `list_capabilities` | read-only | returns the current catalog: each capability's name, class, `invoke_with`, description and argument schema, the node environment (OS, file roots, shells, working directory) and a `catalog_version` |
 | `invoke_read` | read-only | node_status, list_directory, read_file, get_file_info, search_files, read_process_output, list_sessions, list_processes |
-| `invoke_write` | non-destructive write | create_directory |
+| `invoke_write` | non-destructive write | create_directory; since 2.5.0 also the bounded Git changes (ADR-0009: the class is redefined as "changes without data loss") |
 | `invoke_destructive` | destructive | write_file, edit_block, move_file, remove_path, force_terminate |
 | `invoke_exec` | destructive, open-world | start_process, interact_with_process |
 

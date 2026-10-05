@@ -1,5 +1,7 @@
 # WO-0007 — Local Git Operations Capability Family
 
+- Status: `IN_PROGRESS` — implemented in node server 2.5.0, with the deterministic tests green on Windows and Linux. The real Scheduled Task proof is pending with the Owner. Evidence: `docs/evidence/P2-node-2.5-local-git-2026-10-05.md`.
+
 ## Objective
 
 Implement and field-prove the generic local Git capability family defined by ADR-0009 so remote agents can perform normal local repository work without using arbitrary shell commands or generic filesystem mutation for routine version-control operations.
@@ -21,9 +23,9 @@ Add structured local Git read capabilities sufficient for normal decision-making
 
 The implementation team may consolidate read capabilities where that produces a smaller stable schema. Do not mechanically mirror Git CLI commands.
 
-### New `invoke_git`
+### Existing `invoke_write` (Owner decision 2026-10-05, ADR-0009)
 
-Add one fixed dispatcher for bounded local Git mutations.
+The bounded local Git mutations go through the existing `invoke_write`, whose class is redefined as "changes without data loss". The earlier draft's separate `invoke_git` dispatcher is not added: its MCP annotations would have equalled `invoke_write`'s, and a new fixed tool would force every ChatGPT connector to be re-added.
 
 Initial mutation capabilities:
 
@@ -39,9 +41,9 @@ Every capability is repository-state-oriented and must reject arbitrary shell/Gi
 
 ## Risk contract
 
-`invoke_git` is mutating but non-open-world. Supported operations must remain lower-risk than generic filesystem destructive/write operations and arbitrary exec by enforcing repository scope, exact expected-state checks, and non-force/non-lossy semantics.
+The Git changes in `invoke_write` are mutating but non-open-world. Supported operations must remain lower-risk than generic filesystem destructive/write operations and arbitrary exec by enforcing repository scope, exact expected-state checks, and non-force/non-lossy semantics.
 
-Not permitted through `invoke_git` v1:
+Not permitted through the Git capabilities (v1):
 
 - hard reset/discard of local worktree or index;
 - clean/untracked deletion;
@@ -191,4 +193,4 @@ The goal is truthful lower-risk expression, not bypassing ChatGPT safety. If the
 - no low-risk Git capability can be used as arbitrary filesystem write or arbitrary exec;
 - real Scheduled Task comparison is recorded;
 - minimalism review confirms the family is generic Git functionality rather than a collection of incident-specific wrappers;
-- documentation clearly states which destructive/remote-write Git operations remain outside `invoke_git`.
+- documentation clearly states which destructive/remote-write Git operations remain outside the Git capabilities (ADR-0009, catalog `environment.git.rules`).

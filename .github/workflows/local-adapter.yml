@@ -76,6 +76,11 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then FIXTURE="$(cygpath -w "$HOME")\\mcprelay-lc"; else FIXTURE="$HOME/mcprelay-lc"; fi
           node tests/process-lifecycle.mjs --url http://127.0.0.1:18001/mcp --token-env MCPRELAY_BRIDGE_TOKEN --fixture "$FIXTURE" --targets "$MCPRELAY_TARGETS"
+      - name: Local Git operations (ADR-0009)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then FIXTURE="$(cygpath -w "$HOME")\\mcprelay-git"; AUDIT="$(cygpath -w "$HOME")\\mcprelay-audit\\audit.log"
+          else FIXTURE="$HOME/mcprelay-git"; AUDIT="$HOME/mcprelay-audit/audit.log"; fi
+          node tests/git-ops.mjs --url http://127.0.0.1:18001/mcp --token-env MCPRELAY_BRIDGE_TOKEN --fixture "$FIXTURE" --audit "$AUDIT"
       - name: Extended checks (Windows)
         if: runner.os == 'Windows'
         run: |
