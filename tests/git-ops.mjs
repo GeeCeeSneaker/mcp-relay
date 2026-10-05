@@ -183,7 +183,12 @@ await check('repository outside the file roots, or not a repository: refused', a
 
 // A writable folder outside the server's file roots, for escape checks (none: skipped).
 const nodeStatus = JSON.parse((await raw('invoke_read', 'node_status', {})).text);
-const outsideBase = [os.tmpdir(), process.cwd()].find((d) => !nodeStatus.allowed_dirs.some((r) => norm(path.resolve(d)).startsWith(norm(path.resolve(r)))));
+// Compared as real paths: on Windows runners TEMP is an 8.3 short name (C:\Users\RUNNER~1\...)
+// that is really inside the home root.
+const realDirs = async (list) => Promise.all(list.map((d) => fs.realpath(d).then((r) => norm(r), () => norm(path.resolve(d)))));
+const rootsReal = await realDirs(nodeStatus.allowed_dirs);
+const candidates = [os.tmpdir(), process.cwd()];
+const outsideBase = candidates[(await realDirs(candidates)).findIndex((d) => !rootsReal.some((r) => d === r || d.startsWith(r.endsWith(path.sep) ? r : r + path.sep)))];
 let OUTSIDE = null;
 await check('symlink/junction and .git-file escapes to a repository outside the roots: refused', async () => {
   if (!outsideBase) return 'SKIPPED: no writable folder outside the roots';
