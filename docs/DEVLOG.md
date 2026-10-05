@@ -1,5 +1,19 @@
 # Development Log
 
+## 2026-10-05 — Node server v2.5.1: `git_status` clean semantics (#33)
+
+- **Owner's interactive ChatGPT end-to-end test of 2.5.0** (disposable repository; results in #29):
+  - all 13 Git capabilities worked through the existing `invoke_read` / `invoke_write`, without refreshing the connector;
+  - the fail-closed checks held (stale HEAD, dirty tree, worktree with an untracked file).
+- **Finding #33:** `git_status.clean` was `true` when the only change was an untracked file. That matched its internal meaning (no tracked changes), but not Git's "working tree clean".
+- **Fix:**
+  - `clean` now also requires no untracked files;
+  - the new `tracked_clean` keeps the old meaning;
+  - ignored files count for neither field;
+  - the safety checks are unchanged.
+- `tests/git-ops.mjs` gained a check for #33 (26 checks).
+- Still pending: the unattended Scheduled Task proof (#29).
+
 ## 2026-10-05 — Node server v2.5.0: local Git operations (ADR-0009 / WO-0007)
 
 - **What it adds:** 13 Git capabilities.

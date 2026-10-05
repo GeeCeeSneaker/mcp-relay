@@ -233,7 +233,11 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
       for (const p of wt) marks.push([p, await contentMark(path.join(ctx.top, p))]);
       s.worktree_fingerprint = createHash('sha256').update(JSON.stringify(marks)).digest('hex');
     }
-    s.clean = !s.staged.length && !s.unstaged.length && !s.conflicts.length;
+    // trackedClean: no staged, unstaged or conflicted tracked changes (what the change checks
+    // need; untracked files are checked separately where they matter). clean: also no untracked
+    // files, as in Git's "working tree clean" (#33). Ignored files count for neither.
+    s.trackedClean = !s.staged.length && !s.unstaged.length && !s.conflicts.length;
+    s.clean = s.trackedClean && !s.untracked.length;
     return s;
   }
   // Index entry and working-tree content of each dirty path: what preserve_exact keeps.
@@ -260,7 +264,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
   }
   const needClean = (s, what) => {
     if (s.conflicts.length) fail('conflict', `${what}: the index has unresolved conflicts; nothing was changed.`, { status: 'refused', conflicts: s.conflicts.slice(0, 50) });
-    if (!s.clean) {
+    if (!s.trackedClean) {
       fail('dirty_worktree', `${what}: the working tree has uncommitted changes to tracked files; nothing was changed.`, {
         status: 'refused', staged: s.staged.slice(0, 50).map((x) => x.path), unstaged: s.unstaged.slice(0, 50).map((x) => x.path),
       });
@@ -325,7 +329,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
     const lists = { staged: s.staged, unstaged: s.unstaged, untracked: s.untracked, conflicts: s.conflicts };
     return factsResult({
       repository: repoFacts(ctx), head: s.head, branch: s.branch, detached: s.branch === 'HEAD',
-      upstream: s.upstream, ahead: s.ahead, behind: s.behind, operation_in_progress: await inProgress(ctx), clean: s.clean,
+      upstream: s.upstream, ahead: s.ahead, behind: s.behind, operation_in_progress: await inProgress(ctx), clean: s.clean, tracked_clean: s.trackedClean,
       counts: Object.fromEntries(Object.entries(lists).map(([k, v]) => [k, v.length])),
       ...Object.fromEntries(Object.entries(lists).map(([k, v]) => [k, v.slice(0, max)])),
       truncated: Object.values(lists).some((v) => v.length > max),
@@ -613,7 +617,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
         const wctx = await openRepo(w.path, 'write');
         if (await inProgress(wctx)) fail('operation_in_progress', `A Git operation is in progress in ${w.path}.`, { ...facts, status: 'refused' });
         const ws = await snapshot(wctx);
-        if (!ws.clean || ws.untracked.length) {
+        if (!ws.clean) {
           fail('dirty_worktree', `Worktree ${w.path} has uncommitted changes or untracked files; nothing was removed.`, { ...facts, status: 'refused', staged: ws.staged.length, unstaged: ws.unstaged.length, untracked: ws.untracked.length, conflicts: ws.conflicts.length });
         }
         // git worktree remove deletes ignored files silently: refuse instead.
@@ -709,7 +713,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
         facts.conflicts = s2.conflicts.slice(0, 100);
         if (op) await git(ctx.top, [{ merge: 'merge', cherry_pick: 'cherry-pick', revert: 'revert' }[op] || 'merge', '--abort']);
         const s3 = await snapshot(ctx);
-        const restored = !(await inProgress(ctx)) && s3.head === s.head && s3.branch === s.branch && s3.index_fingerprint === s.index_fingerprint && s3.clean;
+        const restored = !(await inProgress(ctx)) && s3.head === s.head && s3.branch === s.branch && s3.index_fingerprint === s.index_fingerprint && s3.trackedClean;
         Object.assign(facts, { new: where(s3), aborted: !!op, restored });
         if (!restored) { facts.status = 'partial'; fail('partial_state', `${mode} failed and the previous state could not be proven restored: ${gist(r.err)}. Inspect with git_status and ask the user.`, facts); }
         facts.status = op ? 'aborted' : 'refused';
@@ -724,7 +728,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
       else if (mode === 'merge' && parents.length === 2 && parents[0] === s.head && parents[1] === src) facts.status = 'merged';
       else if (mode !== 'merge' && parents.length === 1 && parents[0] === s.head) facts.status = mode === 'revert' ? 'reverted' : 'picked';
       else { facts.status = 'partial'; fail('partial_state', `Unexpected result of ${mode}: HEAD ${s2.head} with parents ${parents.join(', ')}.`, facts); }
-      if (!s2.clean) facts.warning = 'the working tree is not clean after the operation (filters or line-ending normalization?); see git_status';
+      if (!s2.trackedClean) facts.warning = 'tracked files have uncommitted changes after the operation (filters or line-ending normalization?); see git_status';
       Object.assign(facts, { parents, index_fingerprint: s2.index_fingerprint });
       return factsResult(facts);
     });
@@ -736,7 +740,7 @@ export function gitCapabilities({ allowedPath, fail, factsResult, CapError, norm
   const repo = { repo: str };
   const HEADX = 'expected_head = HEAD from git_status ("unborn" before the first commit)';
   const tools = {
-    git_status: { d: 'State of a local Git repository (repo = its working-tree folder inside the file roots): HEAD, branch ("HEAD" when detached), upstream ahead/behind, operation in progress, staged / unstaged / untracked / conflict paths (max_paths per list, default 500), and index_fingerprint / worktree_fingerprint, which Git write capabilities take as expected_index / expected_worktree. Start every Git change here.',
+    git_status: { d: 'State of a local Git repository (repo = its working-tree folder inside the file roots): HEAD, branch ("HEAD" when detached), upstream ahead/behind, operation in progress, clean (no staged, unstaged, untracked or conflicted paths; ignored files do not count) and tracked_clean (the same without untracked files), staged / unstaged / untracked / conflict paths (max_paths per list, default 500), and index_fingerprint / worktree_fingerprint, which Git write capabilities take as expected_index / expected_worktree. Start every Git change here.',
       s: P({ ...repo, max_paths: num }, ['repo']), run: gitStatus },
     git_diff: { d: 'Diff of a local repository, bounded (max_bytes, default 200000): scope unstaged (working tree vs index, default), staged (index vs HEAD) or commits (from .. to, to default HEAD). Optional paths filter; stat_only returns only the per-file numbers. Never changes anything; external diff tools and textconv are not run.',
       s: P({ ...repo, scope: { type: 'string', enum: ['unstaged', 'staged', 'commits'] }, from: str, to: str, paths: strs, max_bytes: num, stat_only: bool }, ['repo']), run: gitDiff },

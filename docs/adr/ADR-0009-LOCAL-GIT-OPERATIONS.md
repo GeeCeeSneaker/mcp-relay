@@ -308,6 +308,10 @@ The code is in `node-runtime/git.mjs` and the tests in `tests/git-ops.mjs`. The 
 - Expected state comes from `git_status`:
   - `index_fingerprint` is the SHA-256 of every index entry (`ls-files -s`);
   - `worktree_fingerprint` is the SHA-256 of the content of every unstaged, untracked or conflicted path.
+- `git_status` reports two cleanliness fields (2.5.1, #33):
+  - `clean`: no staged, unstaged, untracked or conflicted paths, as in Git's "working tree clean";
+  - `tracked_clean`: the same without untracked files. This is what `dirty_policy: require_clean` and `git_integrate` require.
+  - Ignored files count for neither field. Worktree removal additionally refuses untracked and ignored files.
 - A name such as a branch, tag or `origin/main` must be pinned with `expected_target`/`expected_source`, unless a full SHA is given.
 
 **Per operation**

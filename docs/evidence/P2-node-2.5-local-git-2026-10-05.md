@@ -74,6 +74,21 @@ Each call runs several short Git processes (state read, change, re-read); on Win
 - `git switch` and `git merge` overwrite ignored files by default; MCPRelay passes `--no-overwrite-ignore`.
 - `git worktree remove` deletes ignored files without `--force`; MCPRelay refuses instead.
 
+## Interactive ChatGPT end-to-end (Owner, 2026-10-05; details in #29)
+
+- **Setup:** server 2.5.0, `catalog_version` `95de673f796d`, a disposable repository under `D:\`.
+- **Connector:** ChatGPT's cached connector still described `invoke_write` narrowly. A fresh `list_capabilities` listed the `git_*` capabilities, and `invoke_write` accepted them with no connector refresh.
+- **Passed:**
+  - all six reads;
+  - fetch, checkout (including `preserve_exact` both ways), ref create/rename/delete, worktree add/remove, stage/unstage, commit, merge.
+- **Fail-closed checks held:**
+  - stale `expected_head` → `stale_state`;
+  - revert on a dirty tree → `dirty_worktree`;
+  - removing a worktree with an untracked file → `dirty_worktree`.
+- **Finding #33:** `clean: true` with only an untracked file. Fixed in 2.5.1:
+  - `clean` = no staged, unstaged, untracked or conflicted paths;
+  - `tracked_clean` = the same without untracked files.
+
 ## Real ChatGPT Scheduled Task proof — pending (Owner)
 
 Install 2.5.0 on the node. The connector needs no change. Then, in a disposable repository inside the roots:
