@@ -35,7 +35,7 @@ import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/s
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { GIT_ERRORS, gitCapabilities } from './git.mjs';
 
-const VERSION = '2.5.0';
+const VERSION = '2.5.1';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });

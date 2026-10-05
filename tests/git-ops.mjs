@@ -114,10 +114,21 @@ await check('a capability is refused through another class tool (nothing runs)',
 let st0;
 await check('git_status: clean clone with head, branch, upstream and fingerprints', async () => {
   st0 = await status(WORK);
-  expect(st0.head === base && st0.branch === 'main' && st0.detached === false && st0.clean === true, JSON.stringify(st0));
+  expect(st0.head === base && st0.branch === 'main' && st0.detached === false && st0.clean === true && st0.tracked_clean === true, JSON.stringify(st0));
   expect(st0.upstream === 'origin/main' && st0.ahead === 0 && st0.behind === 0, `upstream ${st0.upstream} ${st0.ahead}/${st0.behind}`);
   expect(/^[0-9a-f]{64}$/.test(st0.index_fingerprint) && /^[0-9a-f]{64}$/.test(st0.worktree_fingerprint), 'fingerprints');
   expect(norm(st0.repository.worktree) === norm(await fs.realpath(WORK)), `worktree ${st0.repository.worktree}`);
+});
+
+await check('git_status: an untracked file makes clean false (tracked_clean stays true); ignored files count for neither (#33)', async () => {
+  await write(P('work', 'only-untracked.txt'), 'u\n');
+  const u = await status(WORK);
+  expect(u.clean === false && u.tracked_clean === true && u.counts.untracked === 1, JSON.stringify(u));
+  await fs.rm(P('work', 'only-untracked.txt'));
+  await write(P('work', 'only-ignored.log'), 'i\n');
+  const i = await status(WORK);
+  expect(i.clean === true && i.tracked_clean === true && i.counts.untracked === 0, JSON.stringify(i));
+  await fs.rm(P('work', 'only-ignored.log'));
 });
 
 await check('git_status: staged / unstaged / untracked; fingerprints follow content', async () => {
