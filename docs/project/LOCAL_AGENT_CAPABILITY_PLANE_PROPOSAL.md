@@ -2,7 +2,9 @@
 
 ## Status
 
-**PROPOSED cross-project integration direction. Design-only; no deployment or public-contract change is authorized by this document.**
+**OWNER-APPROVED cross-project integration direction. Becomes accepted MCPRelay architecture direction when this PR is merged.**
+
+Implementation remains staged and evidence-gated; this document does not make all future capabilities READY at once.
 
 This proposal records a new demonstrated use case: MCPRelay is becoming the reusable **multi-node communication and capability plane** that connects a central ADCP Management/Reviewer Control Plane to tightly paired per-node resident Controllers and future local/remote Agent runtimes.
 
