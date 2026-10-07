@@ -4,11 +4,11 @@
 
 **PROPOSED cross-project integration direction. Design-only; no deployment or public-contract change is authorized by this document.**
 
-This proposal records a new demonstrated use case: MCPRelay is becoming the reusable local capability plane not only for interactive ChatGPT calls, but also for remote Reviewer automation and future local/remote Agent runtimes.
+This proposal records a new demonstrated use case: MCPRelay is becoming the reusable **multi-node communication and capability plane** not only for interactive ChatGPT calls, but also for remote Reviewer automation, resident per-node Controllers, and future local/remote Agent runtimes.
 
 The proposal preserves MCPRelay's core product boundary:
 
-> expose generic host capabilities through one low-overhead MCP path; do not absorb caller-specific workflow/business semantics.
+> provide one low-overhead authenticated communication/routing plane across many terminals, expose generic host capabilities, and route stable Controller control operations without absorbing Controller workflow/business semantics.
 
 The initial motivating caller is ADCP, but the design is intentionally reusable.
 
@@ -31,15 +31,18 @@ Future Agent providers such as CodeBuddy can consume MCP servers and expose Agen
 
 ### MCPRelay owns
 
-- remote authenticated routing to a node;
+- remote authenticated identity/routing to many nodes;
+- node connection/reconnection and reachability;
+- stable namespace/addressing of each terminal;
 - generic local file capabilities;
 - identity-checked process lifecycle;
 - declared target lifecycle;
 - bounded local Git operations;
 - bounded read-only SQLite inspection;
 - on-demand process/resource observation;
-- audit of capability calls;
-- configuration-only routing of additional co-located MCP backends when the existing gateway/tunnel can support it.
+- exposure/routing of each resident Controller's fixed control surface;
+- audit/correlation of capability calls;
+- gateway aggregation for central management/Reviewer clients.
 
 ### MCPRelay does not own
 
@@ -49,8 +52,11 @@ Future Agent providers such as CodeBuddy can consume MCP servers and expose Agen
 - Agent prompt/work contracts;
 - workspace/result delivery state;
 - GitHub PR acceptance/merge;
-- a central Agent/run/session database;
-- provider adapters for Codex, CodeBuddy, Claude or other vendors.
+- the authoritative ADCP binding/run/session store;
+- Provider adapters for Codex, CodeBuddy, Claude or other vendors;
+- central placement/recovery decisions.
+
+A later central management service may persist node inventory/read-model data, but MCPRelay itself remains the communication/routing layer rather than the workflow scheduler.
 
 The rule is:
 
@@ -124,22 +130,38 @@ Rules:
 
 A declared target uses `target_status` to obtain the exact ref and then the same generic `process_usage`; do not add one resource tool per target.
 
-### 3.4 P1 — co-located MCP backend routing by configuration
+### 3.4 P1 — resident Controller control surface through MCPRelay
 
-ADCP may later expose a small Controller-owned loopback MCP endpoint.
+Each managed execution terminal is expected to run one resident Controller. MCPRelay must make the Controller remotely addressable without moving Controller semantics into the Relay node server.
 
-The first choice is **configuration**, not a generic plugin framework in `node-runtime/server.mjs`:
+Initial Controller capability family, presented under the node namespace:
 
-- reuse the existing outbound tunnel process with another static reverse-forward if supported;
-- configure the existing MCP gateway with another namespaced backend;
-- keep the Controller listener loopback-only;
-- keep client/public ingress on the same authenticated gateway;
-- do not add a new public port;
-- do not create a second MCPRelay node capability process.
+- `controller.snapshot` — bounded read of Controller/Agent/capacity/runtime state;
+- `controller.apply_decision` — dispatch one exact durable decision reference for START/RESUME admission;
+- `controller.stop_run` — exact-run stop control.
 
-This is the same multi-backend responsibility already owned by tunnel/gateway modules.
+The preferred implementation is transport/routing:
 
-If current tunnel/gateway components cannot route one additional co-located backend cleanly, record the incompatibility and re-evaluate. Do not automatically build a custom backend registry/proxy.
+- Controller exposes a loopback-only local MCP/RPC endpoint;
+- the existing node tunnel/gateway routes it under the node namespace;
+- if a tiny node-side adapter is required for stable auth/namespacing/correlation, it only forwards typed calls and carries no ADCP correctness state;
+- generic `target_*` remains for Controller process maintenance/recovery, not normal Agent scheduling.
+
+This is intentionally a **Controller backend integration**, not a generic plugin framework.
+
+### 3.5 Multi-node central-management support
+
+MCPRelay's future multi-node responsibility is to let a central management plane answer:
+
+- which nodes are online;
+- which Controller belongs to each node;
+- which provider/capabilities each node exposes;
+- what Controller snapshot/capacity each node reports;
+- where a selected Controller operation should be routed.
+
+MCPRelay does not need to choose the target node according to ADCP business policy. The central ADCP management plane/Reviewer makes that decision, then addresses the selected node through Relay.
+
+Static node configuration remains preferred until the number/churn of terminals demonstrates a real need for dynamic enrollment/inventory machinery.
 
 ### 3.5 Future — execution-scoped Agent tool access
 
@@ -218,7 +240,9 @@ Use process identity rather than executable-name attribution.
 
 ## 6. ADCP integration contract
 
-MCPRelay should provide the following generic building blocks; ADCP composes them:
+MCPRelay provides two distinct surfaces to ADCP.
+
+### Generic node capabilities
 
 ```text
 target_status / target_start / target_stop / target_restart
@@ -228,10 +252,21 @@ process_info / process_usage / wait_for
 file capabilities where necessary
 ```
 
+### Routed resident-Controller capabilities
+
+```text
+controller.snapshot
+controller.apply_decision
+controller.stop_run
+```
+
+The latter are Controller-owned semantics exposed through the MCPRelay node/gateway namespace. MCPRelay authenticates/routes/correlates them; the Controller validates and executes them.
+
 ADCP remains responsible for deciding and proving:
 
 ```text
 which Task may execute
+which node should receive it
 START vs RESUME vs STOP
 binding/run/provider identity
 workspace/result ownership
@@ -239,7 +274,7 @@ exact result publication
 Reviewer acceptance
 ```
 
-If ADCP exposes its own MCP backend, MCPRelay routes it; MCPRelay does not reinterpret it.
+This split lets a future central backend manage many terminals through one communication plane while each resident Controller remains authoritative for local Agent supervision.
 
 ## 7. CodeBuddy / additional Agent direction
 
@@ -258,8 +293,8 @@ The first CodeBuddy integration should compare the official SDK and ACP boundary
 
 - ADCP-specific tools in MCPRelay node core;
 - a generic provider/Agent plugin system;
-- a central task/run/session database;
-- a queue/scheduler/failover service;
+- a replicated central binding/run/session correctness database;
+- automatic failover/migration or a general scheduling/queue platform before multi-node evidence;
 - arbitrary localhost HTTP proxying;
 - a persistent metrics/telemetry service;
 - a second capability daemon for each provider;
@@ -282,20 +317,22 @@ The first CodeBuddy integration should compare the official SDK and ACP boundary
 - Controller target lifecycle is fully observable;
 - resource attribution works.
 
-### R2 — demand-resident Controller proof
+### R2 — resident Controller integration proof
 
-ADCP changes its own lifecycle; MCPRelay only starts/stops/observes the declared target.
+- Controller remains resident and continuously supervises local Agent/runtime facts;
+- route `controller.snapshot/apply_decision/stop_run` through MCPRelay;
+- prove Relay disconnect does not terminate or orphan local Agent supervision;
+- prove idle Controller remains within CPU/RSS budgets;
+- normal Agent scheduling does not require Controller process restart.
 
-Pass when Controller can be absent while no work exists and still complete wake -> run -> terminal mechanics -> clean exit without weakening crash correctness.
+### R3 — two-node management-plane proof
 
-### R3 — optional additional Controller backend
-
-Only after ADCP architecture accepts it:
-
-- route one loopback Controller MCP backend through existing tunnel/gateway configuration;
-- measure incremental process/network/resource cost;
-- prove authentication/routing isolation;
-- no new node-core plugin architecture.
+- expose two resident Controllers through one MCPRelay gateway namespace;
+- central ADCP management/Reviewer reads both snapshots;
+- select one compatible/free node using a bounded deterministic rule;
+- route one exact decision to the chosen Controller;
+- stopping/disconnecting one node does not corrupt the other's state;
+- no automatic migration/failover.
 
 ### R4 — second Agent / scoped tool proof
 
@@ -309,13 +346,13 @@ Before merging implementation that expands MCPRelay for this integration, Review
 
 1. Is the capability useful outside ADCP?
 2. Can an existing capability be composed instead?
-3. Did the change add a permanent process/service/database?
-4. Does the new operation have a narrower truthful risk class than exec?
-5. Does it remain within resource budgets?
-6. Can a caller misuse it to bypass path/process/identity checks?
-7. Is caller/provider workflow semantics leaking into MCPRelay?
-8. Can any old wrapper/process now be deleted?
-9. Has actual ChatGPT/Scheduled Task behavior been tested rather than inferred?
-10. Is the same capability meaningful on Linux or at least not needlessly Windows-specific?
+3. Does a Controller-specific operation remain a thin routed interface rather than duplicated workflow logic?
+4. Did the change add a permanent process/service/database, and is it required?
+5. Does the new operation have a truthful risk class and authentication boundary?
+6. Does the Relay node plus resident Controller remain within resource budgets?
+7. Can a caller misuse it to bypass path/process/node/controller identity checks?
+8. Is provider/workflow state leaking into MCPRelay?
+9. Has actual multi-node/ChatGPT/Scheduled Task behavior been tested rather than inferred?
+10. Can any old wrapper/polling path now be deleted or simplified?
 
 This proposal intentionally keeps MCPRelay a small reusable capability plane while allowing ADCP and future Agents to build richer behavior above it.
