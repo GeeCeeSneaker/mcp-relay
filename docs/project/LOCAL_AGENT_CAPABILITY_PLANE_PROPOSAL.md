@@ -56,7 +56,7 @@ Future Agent providers such as CodeBuddy can consume MCP servers and expose Agen
 - Provider adapters for Codex, CodeBuddy, Claude or other vendors;
 - central placement/recovery decisions.
 
-A later central management service may persist node inventory/read-model data, but MCPRelay itself remains the communication/routing layer rather than the workflow scheduler.
+The central ADCP Management/Reviewer Control Plane may persist node inventory/read-model data **and its own durable runtime decisions/placement/dispatch correlation**. MCPRelay itself remains the communication/routing layer rather than the workflow scheduler or decision authority.
 
 The rule is:
 
