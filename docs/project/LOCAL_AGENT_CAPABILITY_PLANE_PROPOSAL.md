@@ -136,9 +136,11 @@ Each managed execution terminal is expected to run one resident Controller. MCPR
 
 Initial Controller capability family, presented under the node namespace:
 
-- `controller.snapshot` — bounded read of Controller/Agent/capacity/runtime state;
-- `controller.apply_decision` — dispatch one exact durable decision reference for START/RESUME admission;
-- `controller.stop_run` — exact-run stop control.
+- `controller.snapshot` — **read** class; bounded Controller/Agent/provider/capacity/runtime snapshot;
+- `controller.apply_decision` — **exec** class; dispatch one exact durable decision reference for START/RESUME admission because a successful call may start Agent execution;
+- `controller.stop_run` — **destructive** class; exact-run stop control.
+
+Keep this surface small. Provider inventory, capacity, health and active-Agent facts should be fields of `controller.snapshot`, not separate tools, until response-size or access-control evidence proves a split is necessary.
 
 The preferred implementation is transport/routing:
 
@@ -162,6 +164,8 @@ MCPRelay's future multi-node responsibility is to let a central management plane
 MCPRelay does not need to choose the target node according to ADCP business policy. The central ADCP management plane/Reviewer makes that decision, then addresses the selected node through Relay.
 
 Static node configuration remains preferred until the number/churn of terminals demonstrates a real need for dynamic enrollment/inventory machinery.
+
+For the first central management implementation, bounded snapshot polling is acceptable because Controller supervision itself is local. Do not add an event broker/subscription service merely to avoid a small number of central read calls. If measured multi-node latency or scale later makes polling materially inefficient, evaluate MCP notifications/subscriptions or another standard mechanism then.
 
 ### 3.5 Future — execution-scoped Agent tool access
 
