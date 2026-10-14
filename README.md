@@ -46,6 +46,14 @@ Candidate ordering and the evidence behind it are in `docs/adr/ADR-0002-P0-DESK-
 
 ## Start here
 
+`invoke_read` also offers `process_usage` (WO-0009): supply an exact `ref`
+from `process_info` or `target_status`, an `interval_ms` in 100..5000 (default
+1000), and optional `tree: true`. It returns CPU before/after/delta, percent of
+one logical core, RSS and exact observation/partial facts. Tree rates may exceed
+100%; uncertain membership or missing counters produce null totals. Collection
+does not signal targets or keep a sampler running. [Engineering evidence and
+field-proof limits](docs/evidence/P2-node-process-usage.md).
+
 A new development team should read, in order:
 
 1. `docs/project/PROJECT_CHARTER.md`

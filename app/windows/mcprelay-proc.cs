@@ -37,6 +37,7 @@ static class Native
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetProcessTimes(IntPtr h, out long creation, out long exit, out long kernel, out long user);
+    [DllImport("psapi.dll", SetLastError = true)] public static extern bool GetProcessMemoryInfo(IntPtr h, out PROCESS_MEMORY_COUNTERS counters, uint size);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool QueryFullProcessImageNameW(IntPtr h, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool TerminateProcess(IntPtr h, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
@@ -82,6 +83,13 @@ struct PROCESSENTRY32W
 }
 [StructLayout(LayoutKind.Sequential)]
 struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+[StructLayout(LayoutKind.Sequential)]
+struct PROCESS_MEMORY_COUNTERS
+{
+    public uint cb, PageFaultCount;
+    public UIntPtr PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+        QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+}
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
 struct STARTUPINFO
 {
@@ -200,15 +208,15 @@ static class ProcHelper
         }
         var rows = new List<object>();
         foreach (var e in snap)
-            if (want == null || want.Contains(e.Pid)) rows.Add(Inspect(e));
+            if (want == null || want.Contains(e.Pid)) rows.Add(Inspect(e, Bool(q, "metrics", false), Bool(q, "identity_only", false)));
         var r = Ok(); r["processes"] = rows; return r;
     }
 
-    static Dictionary<string, object> Inspect(Entry e)
+    static Dictionary<string, object> Inspect(Entry e, bool metrics = false, bool identityOnly = false)
     {
         var r = new Dictionary<string, object>();
         r["pid"] = e.Pid; r["ppid"] = e.Ppid; r["name"] = e.Name;
-        IntPtr h = Native.OpenProcess(QUERY_LIMITED | VM_READ, false, e.Pid);
+        IntPtr h = Native.OpenProcess(identityOnly || metrics ? QUERY_LIMITED | SYNCHRONIZE : QUERY_LIMITED | VM_READ, false, e.Pid);
         bool vm = h != IntPtr.Zero;
         if (!vm) h = Native.OpenProcess(QUERY_LIMITED, false, e.Pid);
         if (h == IntPtr.Zero) { r["access"] = "denied"; return r; }
@@ -216,6 +224,35 @@ static class ProcHelper
         {
             long ft;
             if (StartOf(h, out ft)) { r["start"] = Key(ft); r["start_iso"] = Iso(ft); }
+            if (metrics || identityOnly)
+            {
+                uint waiting = Native.WaitForSingleObject(h, 0);
+                if (waiting == 0) { r["exited"] = true; return r; }
+                if (waiting != 258) { r["access"] = "limited"; return r; }
+            }
+            if (metrics)
+            {
+                // Same native handle binds creation identity, CPU and memory.
+                // No process signal or command-line read on this path.
+                long created, exited, kernel, user;
+                // Exit FILETIME is undefined while running; use the process
+                // handle's wait state, never an assumed zero exit timestamp.
+                if (Native.GetProcessTimes(h, out created, out exited, out kernel, out user))
+                {
+                    r["start"] = Key(created);
+                    r["cpu_time_seconds"] = (kernel + user) / 10000000.0;
+                    r["observed_monotonic_seconds"] = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+                    PROCESS_MEMORY_COUNTERS memory;
+                    if (Native.GetProcessMemoryInfo(h, out memory, (uint)Marshal.SizeOf(typeof(PROCESS_MEMORY_COUNTERS))))
+                        r["rss_bytes"] = memory.WorkingSetSize.ToUInt64();
+                    if (Native.WaitForSingleObject(h, 0) == 0) r["exited"] = true;
+                }
+                // Counter failure cannot prove termination. Only a signalled
+                // process handle above establishes exit; retain unknown data.
+                else r["access"] = "limited";
+                return r;
+            }
+            if (identityOnly) return r;
             var sb = new StringBuilder(32768); uint n = (uint)sb.Capacity;
             if (Native.QueryFullProcessImageNameW(h, 0, sb, ref n)) r["exe"] = sb.ToString(0, (int)n);
             r["cmd"] = CommandLine(h);
