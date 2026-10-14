@@ -34,8 +34,10 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { GIT_ERRORS, gitCapabilities } from './git.mjs';
+import { processUsageCapabilities } from './process-usage.mjs';
+import { nativeUsageSnapshot } from './process-usage-native.mjs';
 
-const VERSION = '2.5.1';
+const VERSION = '2.5.2';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -154,6 +156,7 @@ const ERRORS = {
   start_failed: 'ask_user', health_check_failed: 'ask_user', targets_invalid: 'ask_user',
   timeout: 'retry_later', busy: 'retry_later',
   internal_error: 'stop', helper_missing: 'stop',
+  process_usage_unavailable: 'stop',
   ...GIT_ERRORS, // local Git operations (git.mjs)
 };
 const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
@@ -1007,6 +1010,7 @@ const envNote = (kind) => kind === 'exec'
 const GITOPS = gitCapabilities({ allowedPath, fail, factsResult, CapError, norm, holdsGuarded,
   // core.hooksPath for every Git call: a folder that does not exist, inside this server's read-only code folder.
   noHooksDir: path.join(path.dirname(fileURLToPath(import.meta.url)), 'no-git-hooks') });
+const USAGE = processUsageCapabilities({ snapshot: nativeUsageSnapshot({ windows: WIN, helper: HELPER }), fail, factsResult });
 
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
@@ -1108,6 +1112,7 @@ const TOOLS = {
   target_restart: { d: 'Restart a declared target in one call: verify the running instance (expect_ref: must be that exact instance), stop it per the declared policy, start it as declared, verify the new identity and health checks. Returns status (restarted / started), old and new identity, stop_method, health_check. Partial outcomes are reported, never rolled back: stop_failed, stopped_not_started, exited_after_start, started_identity_mismatch, started_unhealthy. start_if_stopped (default true).',
     s: P({ target: str, expect_ref: str, start_if_stopped: { type: 'boolean' } }, ['target']), run: targetRestart },
   ...GITOPS.tools,
+  ...USAGE.tools,
 };
 // ---------------------------------------------------------- risk classes --
 // Clients (ChatGPT) cache a connector's tool list, so the exposed tools are a
@@ -1155,6 +1160,7 @@ const META = {
   interact_with_process: ['Send input to process',  'exec'],
   spawn_process:         ['Start program',          'exec'],
   ...GITOPS.meta,
+  ...USAGE.meta,
 };
 const invokeTool = (cls) => `invoke_${cls}`;
 const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);

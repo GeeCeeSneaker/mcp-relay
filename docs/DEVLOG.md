@@ -1,5 +1,19 @@
 # Development Log
 
+## 2026-10-14 — WO-0009 engineering candidate (2.5.2)
+
+- One bounded process_usage read family on accepted a8910d39; unmerged WO-0008
+  is deliberately outside this source candidate and must be reconciled on a
+  separately reviewed integration head before any combined deployment.
+- Reuse Windows helper identity handles; Linux reads proc records with checked
+  runtime clock/page units. Before/after and parent/start proofs prevent PID
+  reuse or unrelated attribution. Missing/raced counters and cohorts stay partial.
+- No dependency, permanent process/thread, signal to sampled targets, metrics
+  store, project-specific tool or Controller semantics. Sampling is on demand.
+- See committed acceptance mapping, regressions and bounded isolated resource
+  evidence. Independent review and genuine central Scheduled proof are pending;
+  this entry does not mark DEV_ACCEPTED or authorize deployment/merge.
+
 ## 2026-10-05 — Node server v2.5.1: `git_status` clean semantics (#33)
 
 - **Owner's interactive ChatGPT end-to-end test of 2.5.0** (disposable repository; results in #29):

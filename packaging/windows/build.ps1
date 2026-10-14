@@ -49,7 +49,7 @@ Copy-Item "$nodeDir\node.exe", "$nodeDir\LICENSE" "$OutDir\runtime\node\"
 Remove-Item -Recurse -Force $tmp
 
 Write-Host "== capability server + production dependencies (npm ci)"
-foreach ($f in 'server.mjs', 'git.mjs', 'package.json', 'package-lock.json') {
+foreach ($f in 'server.mjs', 'git.mjs', 'process-usage.mjs', 'process-usage-native.mjs', 'package.json', 'package-lock.json') {
   Copy-Item (Join-Path $repo "node-runtime\$f") "$OutDir\runtime\app\"
 }
 Push-Location "$OutDir\runtime\app"
