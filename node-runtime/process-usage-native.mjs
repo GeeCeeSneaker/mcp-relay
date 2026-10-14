@@ -42,27 +42,33 @@ async function linuxUnits() {
   })();
   return units;
 }
-async function linuxRead(pids, metrics, signal) {
-  const { hz, page, boot } = await linuxUnits();
-  const list = pids ?? (await fs.readdir('/proc')).filter(p => /^\d+$/.test(p)).map(Number);
+async function linuxRead(pids, metrics, signal, { procFs = fs, getUnits = linuxUnits } = {}) {
+  const { hz, page, boot } = await getUnits();
+  const list = pids ?? (await procFs.readdir('/proc')).filter(p => /^\d+$/.test(p)).map(Number);
   if (list.length > 8192) throw error('process enumeration bound exceeded', 'too_large');
   return (await Promise.all(list.map(async pid => {
     if (signal?.aborted) throw error('observation cancelled', 'timeout');
     try {
-      const text = await fs.readFile(`/proc/${pid}/stat`, { encoding: 'utf8', signal });
+      const text = await procFs.readFile(`/proc/${pid}/stat`, { encoding: 'utf8', signal });
       const f = text.slice(text.lastIndexOf(')') + 2).trim().split(/\s+/);
       if (f[0] === 'Z' || f[0] === 'X') return null;
       const row = { pid, ppid: Number(f[1]), start: `${boot}.${f[19]}` };
       if (metrics) Object.assign(row, { cpu_time_seconds: (Number(f[11]) + Number(f[12])) / hz,
         rss_bytes: Number(f[21]) * page, observed_monotonic_seconds: performance.now() / 1000 });
       return row;
-    } catch (e) { if (['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(e.code)) return null; throw e; }
+    } catch (e) {
+      if (['ENOENT', 'ESRCH'].includes(e.code)) return null;
+      // Without readable identity/parent facts this pid may belong to the
+      // requested tree. Access failure proves neither absence nor exit.
+      if (['EACCES', 'EPERM'].includes(e.code)) throw error('process identity or membership unavailable');
+      throw e;
+    }
   }))).filter(Boolean);
 }
-export function nativeUsageSnapshot({ windows, helper }) {
+export function nativeUsageSnapshot({ windows, helper }, linuxDependencies) {
   const read = (pids, metrics, signal) => windows
     ? helperRead(helper, { ...(pids ? { pids } : { all: true }), metrics, identity_only: true }, signal)
-    : linuxRead(pids, metrics, signal);
+    : linuxRead(pids, metrics, signal, linuxDependencies);
   return async (request, signal) => {
     // Full-system enumeration is identity metadata only. CPU/RSS is read only
     // for the root and proven members, never unrelated process attribution.

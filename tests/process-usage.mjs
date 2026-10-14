@@ -10,6 +10,64 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { sampleUsage, provenTree, processUsageCapabilities } from '../node-runtime/process-usage.mjs';
+import { nativeUsageSnapshot } from '../node-runtime/process-usage-native.mjs';
+
+// Exercise the actual /proc parser, error classification and identity scans on
+// both runners; only filesystem bytes/units are deterministic, not snapshots.
+function procCollector(read, pids = [10]) {
+  let reads = 0;
+  const stat = (pid, state = 'S') => {
+    const f = Array(22).fill('0');
+    Object.assign(f, { 0: state, 1: pid === 10 ? '0' : '10', 11: '100', 12: '0',
+      19: pid === 10 ? '100' : '101', 21: '2' });
+    return `${pid} (owned fixture) ${f.join(' ')}`;
+  };
+  const snapshot = nativeUsageSnapshot({ windows: false }, {
+    procFs: {
+      readdir: async p => { assert.equal(p, '/proc'); return pids.map(String); },
+      readFile: async p => {
+        const pid = Number(/^\/proc\/(\d+)\/stat$/.exec(p)?.[1]);
+        assert(pids.includes(pid));
+        const result = read(pid, ++reads);
+        if (['EACCES', 'EPERM', 'ENOENT', 'ESRCH'].includes(result))
+          throw Object.assign(new Error('fixture observation unavailable'), { code: result });
+        return stat(pid, result);
+      },
+    },
+    getUnits: async () => ({ hz: 100, page: 4096, boot: 'aabbccdd' }),
+  });
+  return { snapshot, count: () => reads };
+}
+const procSample = (snapshot, tree = false) => sampleUsage({ ref: '10@aabbccdd.100', interval_ms: 100, tree },
+  { snapshot, wait: async () => {} });
+
+test('collector rejects a persistently unreadable descendant instead of a complete root-only tree', async () => {
+  for (const code of ['EACCES', 'EPERM']) {
+    const c = procCollector(pid => pid === 11 ? code : 'S', [10, 11]);
+    await assert.rejects(procSample(c.snapshot, true), { code: 'process_usage_unavailable' });
+  }
+});
+test('collector root access loss in metrics or ending identity scans never proves exit', async () => {
+  for (const code of ['EACCES', 'EPERM']) for (const lostAt of [2, 3, 4, 5, 6]) {
+    const c = procCollector((pid, read) => read >= lostAt ? code : 'S');
+    await assert.rejects(procSample(c.snapshot), { code: 'process_usage_unavailable' });
+    assert.equal(c.count(), lostAt);
+  }
+});
+test('collector preserves confirmed absence and zombie/dead root exit semantics', async () => {
+  for (const fact of ['ENOENT', 'ESRCH', 'Z', 'X']) {
+    const initial = procCollector(() => fact);
+    await assert.rejects(procSample(initial.snapshot), { code: 'process_exited' });
+    const later = procCollector((pid, read) => read >= 4 ? fact : 'S');
+    const result = await procSample(later.snapshot);
+    assert.equal(result.state, 'exited'); assert.equal(result.cpu_percent_one_core, null);
+    assert.equal(result.rss_bytes, null); assert.equal(result.partial, true);
+  }
+});
+test('collector unknown membership fails even when the unreadable pid could be unrelated', async () => {
+  const c = procCollector(pid => pid === 11 ? 'EACCES' : 'S', [10, 11]);
+  await assert.rejects(procSample(c.snapshot, true), { code: 'process_usage_unavailable' });
+});
 
 const row = (pid, start, cpu, time, ppid = 0, rss = 1024) => ({ pid, start, ppid,
   cpu_time_seconds: cpu, observed_monotonic_seconds: time, rss_bytes: rss });

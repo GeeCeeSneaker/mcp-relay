@@ -38,6 +38,37 @@ Relay process's own changing helper tree may therefore be partial.
 
 ## Acceptance mapping
 
+### R1 correction after independent REQUEST_CHANGES
+
+Review6179838833 / PM reconciliation6180110746 bind the original candidate
+fb52d3b8f8dc533647ca1dae654b52508e24e5fd. That review is REQUEST_CHANGES;
+the preceding handback's PENDING label was inaccurate. Only the independent
+Reviewer can close the finding on the new exact head.
+
+Linux EACCES/EPERM now fail the affected observation explicitly as
+process_usage_unavailable, preserving the difference from ENOENT/ESRCH and Z/X.
+An unreadable enumerated pid has unknown parent/start; it could be a descendant,
+so a tree query conservatively fails even if that pid would in reality be
+unrelated. It never yields a complete root-only tree or invents an exit. Single
+root observations similarly fail on access loss in metrics or either identity
+scan. No new scan, registry, state/output schema or persistent component.
+
+Collector-level tests drive the actual proc parser/error classification/scans
+using deterministic filesystem bytes and counter units, on both runners. They
+cover persistent inaccessible child, EACCES/EPERM at each root scan/metrics
+position, unknown membership, and preserved actual absence/zombie/dead semantics.
+The injectable filesystem/units are internal factory arguments only, not MCP
+inputs or runtime configuration. Before the correction: 3 failing collector
+tests / 1 passing true-exit test. The final focused suite has 18 tests; exact
+results and Windows/Linux CI belong in the PR/Issue handback.
+
+Windows audit found the same conflation when GetProcessTimes failed after the
+handle/creation observation. That branch now retains access=limited and missing
+counters; only a signalled process handle marks exited. GetProcessMemoryInfo
+failure already retains missing RSS. No Win32 counter-failure injection or new
+permissions were used; source audit, compile and actual owned native exit/rate
+fixtures are distinguished from the deterministic Linux collector negatives.
+
 Command: `node --test tests/process-usage.mjs`, pinned Node 24.21.0 and the local
 recompiled helper, disposable authenticated node/fixtures only.
 
@@ -54,7 +85,7 @@ recompiled helper, disposable authenticated node/fixtures only.
 | 9 genuine Scheduled | **PENDING/NOT ATTEMPTED** on this candidate; manual/local/delegated is not a substitute |
 | 10 idle resource | Matched isolated base/candidate measurements below; no persistent additions |
 
-Local focused suite: **14 passed, 0 failed, 0 skipped**. One measured fixture
+Original fb52d3b8 local focused suite: **14 passed, 0 failed, 0 skipped**. One measured fixture
 reported idle 0%, busy 99.95% of one logical core. Complete existing regressions:
 legacy 37 + modern 37 + lifecycle 19 + Git 26 + extended 10 = **129 passed**,
 all five commands exit 0, against an isolated fixture node.

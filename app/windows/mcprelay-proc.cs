@@ -247,7 +247,9 @@ static class ProcHelper
                         r["rss_bytes"] = memory.WorkingSetSize.ToUInt64();
                     if (Native.WaitForSingleObject(h, 0) == 0) r["exited"] = true;
                 }
-                else r["exited"] = true;
+                // Counter failure cannot prove termination. Only a signalled
+                // process handle above establishes exit; retain unknown data.
+                else r["access"] = "limited";
                 return r;
             }
             if (identityOnly) return r;
