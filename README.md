@@ -36,6 +36,10 @@ Candidate ordering and the evidence behind it are in `docs/adr/ADR-0002-P0-DESK-
 
 ## Non-negotiable rules
 
+WO-0010's [isolated two-backend diagnostic](docs/evidence/P2-colocated-backend-routing.md)
+records configuration/authentication proof and a reproduced outage-isolation
+blocker. Its diagnostic CI is not normal-central/tunnel E2E acceptance.
+
 1. **Minimal solution first.** Every permanent component/process/abstraction must solve a current demonstrated requirement.
 2. **Repository is the durable authority.** Architecture, execution plan, important implementation decisions, PRs, CI/evidence and handoffs must be reconstructable from GitHub.
 3. **Development team is autonomous inside the frozen execution envelope.** The team may decompose work, create Issues/PRs, adjust implementation order, fix defects, refactor and choose equivalent dependencies without waiting for per-step Reviewer approval.

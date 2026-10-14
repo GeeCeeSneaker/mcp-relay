@@ -1,0 +1,48 @@
+name: backend-routing-diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'tests/backend-routing.py'
+      - 'tests/routing-*'
+      - 'tests/prepare-routing-gateway.py'
+      - 'patches/mcp-gateway/**'
+      - '.github/workflows/backend-routing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-diagnostic-not-acceptance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install unchanged pinned node runtime
+        run: npm ci --prefix node-runtime --no-fund --no-audit
+      - name: Install hash-locked isolated Python dependencies
+        run: |
+          export PIP_CONFIG_FILE="$(python -c 'import os; print(os.devnull)')"
+          python -m pip install --index-url https://pypi.org/simple --require-hashes -r tests/routing-requirements.txt
+      - name: Prepare fixed public gateway source and accepted patches
+        run: python tests/prepare-routing-gateway.py --out "$RUNNER_TEMP/wo10-fixed-gateway"
+      - name: Observe OAuth, namespaces, outage, recovery and bounded resources
+        # Diagnostic tolerates ONLY the explicitly recorded isolation timeout.
+        # A green job proves the observation harness ran, never WO acceptance.
+        run: python tests/backend-routing.py --gateway-source "$RUNNER_TEMP/wo10-fixed-gateway" --sample-seconds 30 --diagnostic-only
