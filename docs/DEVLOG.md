@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-10-14 — WO-0008 SQLite read engineering candidate (node 2.6.0)
+
+- Adds generic SQLite schema/query through the existing read dispatcher.
+- Uses pinned Node's SQLite with hard read-only/authorizer enforcement, WAL
+  shared-memory preservation, bounded per-call reader lifecycle and output.
+- No new dependency, daemon, database copy, auth or public endpoint.
+- Deterministic SQLite safety tests and existing protocol/process/Git regressions
+  are recorded in [the engineering evidence](evidence/P2-node-2.6-sqlite-read.md).
+- Actual Scheduled Task proof and approved deployment remain pending; this
+  engineering handoff is not DEV_ACCEPTED or independent verification.
+
 ## 2026-10-05 — Node server v2.5.1: `git_status` clean semantics (#33)
 
 - **Owner's interactive ChatGPT end-to-end test of 2.5.0** (disposable repository; results in #29):

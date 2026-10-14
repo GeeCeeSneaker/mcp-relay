@@ -34,8 +34,9 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { GIT_ERRORS, gitCapabilities } from './git.mjs';
+import { SQLITE_ERRORS, sqliteCapabilities } from './sqlite.mjs';
 
-const VERSION = '2.5.1';
+const VERSION = '2.6.0';
 const { values: opt } = parseArgs({
   options: { port: { type: 'string', default: '18001' }, host: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } },
 });
@@ -155,6 +156,7 @@ const ERRORS = {
   timeout: 'retry_later', busy: 'retry_later',
   internal_error: 'stop', helper_missing: 'stop',
   ...GIT_ERRORS, // local Git operations (git.mjs)
+  ...SQLITE_ERRORS,
 };
 const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
 // facts: optional structured record of what was found or done before the failure
@@ -1007,6 +1009,7 @@ const envNote = (kind) => kind === 'exec'
 const GITOPS = gitCapabilities({ allowedPath, fail, factsResult, CapError, norm, holdsGuarded,
   // core.hooksPath for every Git call: a folder that does not exist, inside this server's read-only code folder.
   noHooksDir: path.join(path.dirname(fileURLToPath(import.meta.url)), 'no-git-hooks') });
+const SQLITE = sqliteCapabilities({ allowedPath, fail, factsResult });
 
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
@@ -1108,6 +1111,7 @@ const TOOLS = {
   target_restart: { d: 'Restart a declared target in one call: verify the running instance (expect_ref: must be that exact instance), stop it per the declared policy, start it as declared, verify the new identity and health checks. Returns status (restarted / started), old and new identity, stop_method, health_check. Partial outcomes are reported, never rolled back: stop_failed, stopped_not_started, exited_after_start, started_identity_mismatch, started_unhealthy. start_if_stopped (default true).',
     s: P({ target: str, expect_ref: str, start_if_stopped: { type: 'boolean' } }, ['target']), run: targetRestart },
   ...GITOPS.tools,
+  ...SQLITE.tools,
 };
 // ---------------------------------------------------------- risk classes --
 // Clients (ChatGPT) cache a connector's tool list, so the exposed tools are a
@@ -1117,7 +1121,7 @@ const TOOLS = {
 // user before destructive or open-world actions. The server enforces classes:
 // a capability is only run through its own class tool.
 const CLASSES = {
-  read: { title: 'Read (no changes)', covers: 'reads files, directories, file info, process output, command sessions, system processes, process identities, target status, node status and local Git repository state, or waits for a condition; never changes anything',
+  read: { title: 'Read (no changes)', covers: 'reads files, directories, file info, process output, command sessions, system processes, process identities, target status, node status, local Git state and bounded SQLite schema/queries, or waits for a condition; never changes anything',
     hints: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   // ADR-0009: non-lossy changes. Git changes are listed here because every one names the
   // exact state it expects (compare-and-swap) and none forces or discards anything.
@@ -1155,6 +1159,7 @@ const META = {
   interact_with_process: ['Send input to process',  'exec'],
   spawn_process:         ['Start program',          'exec'],
   ...GITOPS.meta,
+  ...SQLITE.meta,
 };
 const invokeTool = (cls) => `invoke_${cls}`;
 const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
