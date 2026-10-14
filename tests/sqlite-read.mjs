@@ -39,8 +39,10 @@ async function query(sql, extra = {}) {
 function good(r) { assert.equal(r.error, false, r.text); return r.value; }
 function refused(r) { assert.equal(r.error, true, 'operation unexpectedly allowed'); }
 before(async () => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), 'mcprelay-wo8-'));
-  outside = await fs.mkdtemp(path.join(os.tmpdir(), 'mcprelay-wo8-outside-'));
+  // Windows CI can spell TEMP with an 8.3 alias. Declare the canonical root,
+  // matching the existing guard's realpath policy; never relax that policy.
+  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcprelay-wo8-')));
+  outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcprelay-wo8-outside-')));
   await fs.mkdir(path.join(root, 'protected'));
   await fs.mkdir(path.join(root, 'read-only'));
   dbfile = path.join(root, 'fixture.db');
@@ -240,11 +242,34 @@ test('node exit cannot orphan an expensive native SQLite reader', async () => {
   await new Promise(resolve => setTimeout(resolve, 300));
   const own = good(await call('list_processes', { name: 'node', limit: 500 })).filter(p => p.parent_pid === server.pid);
   assert.equal(own.length, 1, 'exact disposable node must have one owned SQLite child');
+  const linuxStat = async () => {
+    const text = await fs.readFile(`/proc/${own[0].pid}/stat`, 'utf8');
+    const fields = text.slice(text.lastIndexOf(')') + 2).trim().split(/\s+/);
+    return { state: fields[0], cpu: fields[11] + ':' + fields[12], start: fields[19], rss: fields[21] };
+  };
+  const original = process.platform === 'linux' ? await linuxStat() : null;
   const closed = new Promise(resolve => server.once('close', resolve));
   server.kill(); await closed;
   let gone = false;
   for (let i = 0; i < 40; i++) {
     try { process.kill(own[0].pid, 0); } catch { gone = true; break; }
+    if (original) {
+      try {
+        const current = await linuxStat();
+        if (current.start !== original.start) { gone = true; break; } // PID reused: original has exited
+        if (current.state === 'Z') {
+          // A runner's PID 1 may leave an exited orphan unreaped. Prove native
+          // execution and resident memory are gone; never accept a live reader.
+          await new Promise(resolve => setTimeout(resolve, 100));
+          const after = await linuxStat().catch(e => e.code === 'ENOENT' ? null : Promise.reject(e));
+          if (after && after.start === original.start) {
+            assert.equal(after.state, 'Z'); assert.equal(after.rss, '0'); assert.equal(after.cpu, current.cpu);
+            console.log('Owned reader exited: zombie state, zero resident pages, unchanged CPU ticks; awaiting OS reap');
+          }
+          gone = true; break;
+        }
+      } catch (e) { if (e.code === 'ENOENT') { gone = true; break; } throw e; }
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   await client.close(); await pending;

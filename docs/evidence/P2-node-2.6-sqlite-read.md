@@ -82,6 +82,16 @@ assertion was weakened. CI runs the new SQLite suite on Windows and Linux in
 addition to the existing acceptance workflow; exact PR checks are reported in
 the PR/Issue rather than asserted before CI executes.
 
+The first Linux CI passed the first 17 SQLite checks but the final exit check
+treated any extant PID as running. The revised check records the exact Linux
+start identity and accepts an unreaped zombie only when its state is `Z`, its
+resident pages are zero and CPU ticks remain unchanged. A live native reader
+still fails. This distinguishes execution exit from PID 1's later OS reaping;
+the exact observed state and final result must be read back from revised CI.
+The first Windows CI exposed an 8.3 TEMP alias in the fixture's declared root.
+The fixture now declares its canonical real path, as the existing guard requires;
+the production root policy is unchanged. Revised CI must verify the whole suite.
+
 ## Isolated resource evidence
 
 An exact owned PID/start was verified before and after each approximately
