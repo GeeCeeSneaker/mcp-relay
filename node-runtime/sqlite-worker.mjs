@@ -28,9 +28,12 @@ if (isMainThread) {
     finished = true; clearTimeout(deadline);
     process.stdout.write(JSON.stringify(message), () => process.exit(0));
   };
-  process.once('disconnect', () => process.exit(0));
-  if (process.connected === false) process.exit(0);
-  const deadline = setTimeout(() => finish({ error: 'sqlite_timeout' }), Math.min(request.timeout_ms ?? 2000, 10000));
+  // process.exit() can wait for a thread stuck in native SQLite. Only an OS
+  // process kill guarantees interruption when the owning node has disappeared.
+  const hardExit = () => process.kill(process.pid, 'SIGKILL');
+  process.once('disconnect', hardExit);
+  if (process.connected === false) hardExit();
+  const deadline = setTimeout(hardExit, Math.min(request.timeout_ms ?? 2000, 10000));
   const worker = new Worker(new URL(import.meta.url), {
     workerData: input, resourceLimits: { maxOldGenerationSizeMb: 16 },
   });

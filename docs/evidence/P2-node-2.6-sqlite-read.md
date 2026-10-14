@@ -88,6 +88,11 @@ start identity and accepts an unreaped zombie only when its state is `Z`, its
 resident pages are zero and CPU ticks remain unchanged. A live native reader
 still fails. This distinguishes execution exit from PID 1's later OS reaping;
 the exact observed state and final result must be read back from revised CI.
+That diagnostic revision confirmed the reader was still live on Linux, rather
+than an unreaped zombie: `process.exit()` waits for native worker termination.
+The supervisor now uses an OS kill of its own temporary process on parent
+disconnect/deadline, which interrupts the native thread. Revised two-platform
+CI must establish this fix; no deployed process was operated.
 The first Windows CI exposed an 8.3 TEMP alias in the fixture's declared root.
 The fixture now declares its canonical real path, as the existing guard requires;
 the production root policy is unchanged. Revised CI must verify the whole suite.
