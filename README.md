@@ -60,3 +60,28 @@ A new development team should read, in order:
 10. `docs/adr/` (ADR-0001 baseline, ADR-0002 P0 refinement)
 
 The entire v1 execution program in `MASTER_IMPLEMENTATION_PLAN.md` is pre-authorized. Phase Work Orders under `docs/work_orders/` are durable handoff/checklist artifacts, not gates requiring Reviewer permission between every step.
+
+## SQLite reads (node 2.6.0 / WO-0008)
+
+`sqlite_schema` and `sqlite_query` use the existing `invoke_read` dispatcher.
+Supply an absolute database filename inside the configured file roots.
+`sqlite_schema` accepts an optional exact `table` filter; query bindings are
+`params` (positional array) or `named_params` (object with SQL-prefixed keys),
+never both. SQL is one statement, with no non-whitespace tail.
+
+The node owns the reader: read-only connection, query-only mode, SQLite
+authorizer, disabled extensions, bounded output/memory/deadline, and read-only
+WAL shared memory. No caller executable, script, URI options, connection pool,
+database copy or database repair. Protected-path and companion/reparse guards
+also apply. Missing/unreadable or recovery-requiring databases fail closed.
+
+Query rows are arrays aligned with `columns`; integers outside JSON's safe
+range use `{type:"integer", value:"<decimal>"}`, and blobs use
+`{type:"blob", base64:"<data>"}`. Catalog descriptions publish exact bounds.
+Non-finite REAL values use `{type:"real", value:"Infinity" | "-Infinity"}`
+instead of silently becoming JSON null.
+The two new capabilities do not add a fixed MCP tool or require an auth change.
+
+Engineering/field-proof status and the acceptance mapping are recorded in
+[WO-0008 evidence](docs/evidence/P2-node-2.6-sqlite-read.md). A local fixture
+result does not establish deployed or Scheduled Task availability.
