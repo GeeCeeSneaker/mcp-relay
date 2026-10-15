@@ -1,5 +1,8 @@
 # WO-0010 — isolated composition diagnostic, acceptance BLOCKED
 
+The subsequent [design/strict-test/field plan](P2-backend-isolation-design.md)
+continues review6180454036. Its opt-in prototype is not a promoted gateway patch.
+
 Original executor: **gpt-6.1-sol / high**, verified from current platform turn
 metadata. Owner engineering-only extension: issue #38 comment 6179267237.
 Frozen base: `a8910d390ba276a578d6b8f0ee2475430d28a909`; WO blob

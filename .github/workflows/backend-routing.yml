@@ -5,6 +5,7 @@ on:
     paths:
       - 'tests/backend-routing.py'
       - 'tests/routing-*'
+      - 'tests/routing_schema_proposal.py'
       - 'tests/prepare-routing-gateway.py'
       - 'patches/mcp-gateway/**'
       - '.github/workflows/backend-routing.yml'
@@ -46,3 +47,7 @@ jobs:
         # Diagnostic tolerates ONLY the explicitly recorded isolation timeout.
         # A green job proves the observation harness ran, never WO acceptance.
         run: python tests/backend-routing.py --gateway-source "$RUNNER_TEMP/wo10-fixed-gateway" --sample-seconds 30 --diagnostic-only
+      - name: Strict isolated design prototype (does not approve product promotion)
+        # No continue-on-error, expected-failure inversion, skip or xfail.
+        # This unfinished test-only design is NOT a production implementation.
+        run: python tests/backend-routing.py --gateway-source "$RUNNER_TEMP/wo10-fixed-gateway" --sample-seconds 1 --schema-scope-proposal --strict-matrix

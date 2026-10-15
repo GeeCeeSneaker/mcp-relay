@@ -13,9 +13,10 @@ const hash=s=>createHash('sha256').update(s).digest();const expected=hash('Beare
 const context=new AsyncLocalStorage();
 const handler=toNodeHandler(createMcpHandler(()=>{
  const server=new Server({name:'wo10-probe',version:'1'},{capabilities:{tools:{}}});
- server.setRequestHandler('tools/list',async()=>({tools:[{name:'probe',description:'One deterministic disposable read',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true,idempotentHint:true,openWorldHint:false}}]}));
+ server.setRequestHandler('tools/list',async()=>({tools:[{name:'probe',description:'One deterministic disposable read',inputSchema:{type:'object',properties:{tag:{type:'string','x-mcp-header':'fixture-tag'}}},annotations:{readOnlyHint:true,idempotentHint:true,openWorldHint:false}}]}));
  server.setRequestHandler('tools/call',async r=>{
   if(r.params.name!=='probe')throw new Error('unknown fixture tool');
+  if(r.params.arguments?.tag!==undefined&&typeof r.params.arguments.tag!=='string')throw new Error('invalid fixture tag');
   return{content:[{type:'text',text:JSON.stringify({marker:'WO0010_OK',backend:'fixture_probe',expected_bearer_accepted:true,caller_canary_seen:!!context.getStore()?.canary})}]};
  });return server;
 }));
