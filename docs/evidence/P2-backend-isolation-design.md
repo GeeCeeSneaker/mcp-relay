@@ -44,6 +44,20 @@ command, wait and threshold, prints only MCP error/marker/exit/running facts,
 and strengthens completion to exit0. A discarded cmd/Node timer experiment
 failed locally with shell syntax exit1; it is not the candidate command.
 
+Diagnostic revision962974e retained the PowerShell control: Windows strict80/82
+failed those same two cases at7.344/7.063s, with MCP error=false, marker=false,
+exit=null, still_running=true. Linux82/82 and local82/82 passed. This proves the
+Windows result was the capability's initial-output window returning a still-live
+command, rather than an MCP transport error or returned metadata-timeout error.
+It does not prove precisely which PowerShell initialization work consumed time,
+nor retroactively recover fb8's missing result body. The smallest harness
+correction uses the pinned Node's4s timer through CMD, asserts its version and
+changes directory inside Node to the owned temp root. Its command has no quoted
+CMD path/argument ambiguity. Only the owned fixture child's PATH is prepended
+with the pinned Node directory; no machine setting or product code changes.
+The original7s initial wait,8s bound,>=3.5s elapsed, output marker and exit0
+assertions remain. No polling/read_process_output or deadline increase is added.
+
 ## Exact proposed delta
 
 The current test-only proposal uses public FastMCP Middleware, get_http_request,

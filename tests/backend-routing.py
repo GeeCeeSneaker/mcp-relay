@@ -101,10 +101,13 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
     generic_args={'capability':'node_status','args':{}}
     mode='cold_before_discovery' if cold else 'warm_after_discovery'
     async def delayed_execution():
-        # Retain the real four-second command and original 7s wait/8s bound.
-        directory=str(root).replace("'","''") if os.name=='nt' else str(root).replace("'","'\"'\"'")
-        command=f"Set-Location -LiteralPath '{directory}'; Start-Sleep -Seconds 4; Write-Output 'WO10_DELAY'" if os.name=='nt' else f"cd '{directory}' && sleep 4 && printf 'WO10_DELAY\\n'"
-        shell='powershell.exe' if os.name=='nt' else '/bin/sh'
+        # Windows PowerShell initialization plus the 4s command can outlast the
+        # existing 7s initial-output wait. Use the pinned Node directly via CMD;
+        # a whitespace-free expression avoids CMD's quoted-command ambiguity.
+        # Assert its version and enter the owned root inside Node. Keep 7s/8s.
+        directory=str(root).replace("'","'\"'\"'")
+        command="node -e require('node:assert').equal(process.version,'v24.21.0');process.chdir(process.env.WO10_CONTROL_ROOT);setTimeout(console.log,4000,'WO10_DELAY')" if os.name=='nt' else f"cd '{directory}' && sleep 4 && printf 'WO10_DELAY\\n'"
+        shell='cmd.exe' if os.name=='nt' else '/bin/sh'
         start=time.monotonic()
         r=await rpc('fixture_node_invoke_exec',{'capability':'start_process','args':{'command':command,'shell':shell,'timeout_ms':7000}})
         output=''.join(getattr(c,'text','') for c in r.content)
@@ -205,6 +208,9 @@ async def trial(with_probe,cold=False):
     global stage
     stage='startup';generic_port,probe_port,gateway_port=port(),port(),port();node_token,probe_token,password,key=(secrets.token_hex(32) for _ in range(4))
     e=env();e.update(MCPRELAY_BRIDGE_TOKEN=node_token,MCPRELAY_ALLOWED_DIRS=str(root),MCPRELAY_TARGETS=str(root/'targets.json'),MCPRELAY_AUDIT_LOG=str(root/'audit'/'audit.log'))
+    if os.name=='nt':
+        e['PATH']=str(pathlib.Path(args.node_exe).resolve().parent)+os.pathsep+e.get('PATH','')
+        e['WO10_CONTROL_ROOT']=str(root)
     generic=launch('generic',[args.node_exe,str(repo/'node-runtime/server.mjs'),'--port',str(generic_port)],e)
     await ready(f'http://127.0.0.1:{generic_port}/healthz',generic)
     probe_state=root/('probe-state-'+str(len(logs))+'.txt');probe_state.write_text('ready')
