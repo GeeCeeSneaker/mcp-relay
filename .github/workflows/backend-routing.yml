@@ -6,6 +6,7 @@ on:
       - 'tests/backend-routing.py'
       - 'tests/routing-*'
       - 'tests/routing_schema_proposal.py'
+      - 'tests/routing_proposal_tests.py'
       - 'tests/prepare-routing-gateway.py'
       - 'patches/mcp-gateway/**'
       - '.github/workflows/backend-routing.yml'

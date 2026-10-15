@@ -35,11 +35,20 @@ was rejected before execution. It now uses the documented start_process schema
 and changes directory inside its literal fixture command; the delay/output
 assertions are retained.
 
+Scope review6181342660 / PM6181357563 adds compatibility C1 and specific
+negative-evidence requirements. The fb8 candidate's Windows strict CI retained
+54/56, with both real-execution expected-result failures (7.485/7.141s <8s),
+while Linux retained56/56. That job did not publish the private command result;
+its root cause is not established. The revision retains that same PowerShell
+command, wait and threshold, prints only MCP error/marker/exit/running facts,
+and strengthens completion to exit0. A discarded cmd/Node timer experiment
+failed locally with shell syntax exit1; it is not the candidate command.
+
 ## Exact proposed delta
 
 The current test-only proposal uses public FastMCP Middleware, get_http_request,
-Context.fastmcp.get_tool, FastMCP.add_provider, ProxyProvider(cache_ttl=0),
-ProxyTool.from_mcp_tool / Tool.to_mcp_tool and Client.new APIs. Source/dependency
+Context.fastmcp.get_tool, FastMCP.add_provider, the documented Provider
+_list_tools extension, ProxyTool.from_mcp_tool and Client.new APIs. Source/dependency
 bytes remain pinned by routing-gateway-source.json and routing-requirements.txt.
 No private provider cache or low-level SDK schema callback is overwritten.
 
@@ -50,13 +59,14 @@ No private provider cache or low-level SDK schema callback is overwritten.
   to record verified schema/name. Because the SDK can swallow schema-list errors,
   on_call_tool refuses a modern nonempty/header-bearing call lacking that marker.
   Unknown schema cannot turn into later unvalidated execution after reconnect.
-- Compose a metadata ProxyProvider with the documented TTL0. Each lookup uses a
+- Compose a Provider that makes a fresh metadata listing per lookup. Each uses a
   new short-lived NoForwardStreamableHttpTransport client, no connection retries,
   fixture connect250ms/read2s/overall metadata3s bounds. Metadata and execution
   share the same configured backend credentials, not the caller's credentials.
-- The backend execution middleware re-resolves the tool through the authorized
-  metadata provider, converts its complete advertised schema with public APIs,
-  and executes through the existing persistent client factory. Existing execution
+- Construct raw ProxyTools from the backend listing using the existing execution
+  factory BEFORE namespace/rename/session transforms. Standard get_tool/version,
+  middleware/interceptor and tool._run dispatch remain responsible for execution;
+  no middleware reconstructs an already-resolved tool or skips call_next. Execution
   transport6 connection retries and read allowance remain unchanged. Metadata
   budgets do not apply to a real tool's execution.
 - A real full tools/list still discovers each backend, with bounded omission on
@@ -78,13 +88,23 @@ service/proxy process, telemetry loop, workflow/store or Controller semantic.
 Minimalism: temporary metadata sessions add handshake/connection work, not a
 resident process or persistent schema cache. The extra work must be weighed
 against the measured latency/resource evidence; it is not free. Current proof
-uses bearer backends. OAuth backends explicitly fail the prototype's scope guard;
-headers/none are not claimed proven. Replacing FastMCPProxy convenience assembly
+uses bearer backends only: OAuth/headers/none fail before assembly. Versioned
+backend descriptor metadata and explicit version requests also fail closed;
+this lane deliberately proves unversioned tools only. Provider composition serves
+tools only, not resources/prompts. Replacing FastMCPProxy convenience assembly
 also needs review of its metadata/legacy ping/discover behavior before product
 adoption. TLS/custom transport and actual WAN budgets remain compatibility gates.
 The scoped marker and adapters' auth/enabled/version/middleware semantics are
 part of independent review, not assumed equivalent merely because these tests
 pass. These are explicit unresolved promotion gates, not live authorizations.
+
+C1's execution short-circuit is removed. Pinned-package positive rename dispatch
+and negative middleware/extension interception prove original backend identity
+and zero backend execution at those gates. Denied/disabled/missing-auth/unknown
+tests use the pinned server's actual get_tool/call_tool checks, not a fabricated
+authorization result. Version and auth exclusions are enforced with negative
+tests. This narrowed tool-only prototype still does not authorize substituting
+the whole production proxy or silently dropping resources/handshake semantics.
 
 ## Strict tests now prepared
 
@@ -104,6 +124,13 @@ restart. Prototype unit negatives separately cover prefix rejection before
 assembly and missing schema refusing execution. A controlled self-ending4s
 generic command in this fixture's allowed temp root checks that a metadata2/3s
 deadline does not cut execution. It is not a Controller/production exec proof.
+Additional pinned tests force simultaneous separate HTTP-request marker state,
+failed schema lookup then backend recovery, missing schema auth, and unsupported
+auth/version refusals. A real disposable backend accepts HTTP but stalls tools/list;
+its private event counts prove started/closed metadata requests and zero tool
+executions on refusal/cancellation. Healthy sibling calls keep the same bound.
+Caller cancellation and subsequent bounded backend closure are distinct facts;
+this does not claim instantaneous transport abort or WAN cancellation semantics.
 
 Five healthy samples establish a same-fixture baseline. Healthy acceptance bound
 is max(750ms,5x baseline maximum), with an environment ceiling2s; a slow baseline

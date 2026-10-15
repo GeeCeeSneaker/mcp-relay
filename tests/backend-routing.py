@@ -79,7 +79,7 @@ async def auth(base,password):
         r=await h.post(base+'/auth/api/consent',json={'txn_id':txn,'approve':True});cb=parse_qs(urlparse(r.json()['redirect_to']).query);assert cb['state']==[state]
         r=await h.post(meta['token_endpoint'],data={'grant_type':'authorization_code','code':cb['code'][0],'redirect_uri':redirect,'client_id':client_id,'code_verifier':verifier,'resource':base+'/mcp'});assert r.status_code==200
         report('real isolated OAuth code/PKCE/login/consent exchange succeeds');return r.json()['access_token']
-async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold):
+async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,probe_state,probe_events):
     threshold=max(.75,5*max(baseline));assert threshold<=2, 'healthy fixture baseline too slow for this regression envelope'
     async def rpc(name,arguments,c=None,headers=None):
         if c is not None:return await c.call_tool_mcp(name,arguments)
@@ -101,13 +101,19 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold):
     generic_args={'capability':'node_status','args':{}}
     mode='cold_before_discovery' if cold else 'warm_after_discovery'
     async def delayed_execution():
+        # Retain the real four-second command and original 7s wait/8s bound.
         directory=str(root).replace("'","''") if os.name=='nt' else str(root).replace("'","'\"'\"'")
         command=f"Set-Location -LiteralPath '{directory}'; Start-Sleep -Seconds 4; Write-Output 'WO10_DELAY'" if os.name=='nt' else f"cd '{directory}' && sleep 4 && printf 'WO10_DELAY\\n'"
         shell='powershell.exe' if os.name=='nt' else '/bin/sh'
         start=time.monotonic()
         r=await rpc('fixture_node_invoke_exec',{'capability':'start_process','args':{'command':command,'shell':shell,'timeout_ms':7000}})
-        if r.is_error:(root/('delayed-'+mode+'.txt')).write_text(''.join(getattr(c,'text','') for c in r.content))
-        return not r.is_error and 'WO10_DELAY' in ''.join(getattr(c,'text','') for c in r.content) and time.monotonic()-start>=3.5
+        output=''.join(getattr(c,'text','') for c in r.content)
+        marker='WO10_DELAY' in output;finished='Process finished with exit code 0.' in output
+        import re
+        exit_match=re.search(r'Process finished with exit code (-?\d+)\.',output)
+        print(json.dumps({'execution_control':mode,'mcp_error':r.is_error,'timer_marker':marker,'finished_zero':finished,'exit_code':int(exit_match[1]) if exit_match else None,'still_running':'Process still running;' in output,'shell_error':'syntax is incorrect' in output}),flush=True)
+        if r.is_error or not marker or not finished:(root/('delayed-'+mode+'.txt')).write_text(output)
+        return not r.is_error and marker and finished and time.monotonic()-start>=3.5
     await check(mode+'/metadata_deadline_does_not_cut_execution',delayed_execution(),lambda complete:complete,8)
     for cycle in range(2):
         old_start=resource(probe)['start'] if probe.poll() is None else probe.initial_start
@@ -137,6 +143,37 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold):
             except httpx2.HTTPStatusError as e:return e.response.status_code==400
             return False
         await check(f'{mode}/cycle{cycle}/mismatched_header',mismatch(),lambda rejected:rejected,4)
+    def events():
+        records=[json.loads(line)['kind'] for line in probe_events.read_text().splitlines()]
+        return {name:records.count(name) for name in ['metadata_started','metadata_closed','tool_executed']}
+    before=events();probe_state.write_text('stall')
+    stalled=asyncio.create_task(check(mode+'/stalled_metadata/refused',rpc('fixture_backend_probe',{'tag':'matching'},headers={'Mcp-Param-fixture-tag':'matching'}),failed,4))
+    await asyncio.sleep(.1)
+    await check(mode+'/stalled_metadata/healthy_sibling',rpc('fixture_node_invoke_read',generic_args,client),healthy,threshold)
+    await stalled
+    async def closed():
+        for _ in range(40):
+            r=events()
+            if r['metadata_started']>before['metadata_started'] and r['metadata_started']==r['metadata_closed']:
+                return r['tool_executed']==before['tool_executed']
+            await asyncio.sleep(.05)
+        return False
+    await check(mode+'/stalled_metadata/closed_zero_execution',closed(),lambda value:value,3)
+    before=events();cancelled=asyncio.create_task(rpc('fixture_backend_probe',{'tag':'matching'},headers={'Mcp-Param-fixture-tag':'matching'}))
+    for _ in range(40):
+        if events()['metadata_started']>before['metadata_started']:break
+        await asyncio.sleep(.025)
+    else:raise AssertionError('metadata cancellation did not reach the accepting backend')
+    cancelled.cancel()
+    async def cancellation():
+        try:await cancelled
+        except asyncio.CancelledError:return True
+        return False
+    await check(mode+'/cancelled_metadata/caller_cancelled',cancellation(),lambda value:value,1)
+    await check(mode+'/cancelled_metadata/healthy_sibling',rpc('fixture_node_invoke_read',generic_args,client),healthy,threshold)
+    await check(mode+'/cancelled_metadata/closed_zero_execution',closed(),lambda value:value,3)
+    probe_state.write_text('ready')
+    await check(mode+'/stalled_metadata/recovered',rpc('fixture_backend_probe',{}),lambda r:not r.is_error and facts(r)['marker']=='WO0010_OK',threshold)
     return probe
 
 async def proposal_negatives():
@@ -157,6 +194,8 @@ async def proposal_negatives():
         executed=True
     context=NS(message=NS(name='fixture_backend_probe',arguments={'tag':'body'}),fastmcp_context=NS(request_context=NS(protocol_version='2026-07-28')))
     request=NS(state=NS(),headers={})
+    async def request_json():return {'method':'tools/call','params':{'name':'fixture_backend_probe'}}
+    request.json=request_json
     with patch('routing_schema_proposal.get_http_request',return_value=request):
         try:await RequestSchemaScope().on_call_tool(context,execute)
         except ToolError:matrix.append({'case':'prototype_missing_schema_fail_closed','pass':not executed})
@@ -168,8 +207,10 @@ async def trial(with_probe,cold=False):
     e=env();e.update(MCPRELAY_BRIDGE_TOKEN=node_token,MCPRELAY_ALLOWED_DIRS=str(root),MCPRELAY_TARGETS=str(root/'targets.json'),MCPRELAY_AUDIT_LOG=str(root/'audit'/'audit.log'))
     generic=launch('generic',[args.node_exe,str(repo/'node-runtime/server.mjs'),'--port',str(generic_port)],e)
     await ready(f'http://127.0.0.1:{generic_port}/healthz',generic)
+    probe_state=root/('probe-state-'+str(len(logs))+'.txt');probe_state.write_text('ready')
+    probe_events=root/('probe-events-'+str(len(logs))+'.jsonl');probe_events.write_text('')
     def launch_probe():
-        e=env();e['WO10_PROBE_TOKEN']=probe_token
+        e=env();e.update(WO10_PROBE_TOKEN=probe_token,WO10_PROBE_STATE=str(probe_state),WO10_PROBE_EVENTS=str(probe_events))
         return launch('probe',[args.node_exe,str(repo/'tests/routing-probe.mjs'),str(probe_port)],e)
     probe=launch_probe() if with_probe else None
     if probe:
@@ -204,7 +245,7 @@ async def trial(with_probe,cold=False):
             assert 'fixture_backend_probe' in tools;result=facts(await client.call_tool_mcp('fixture_backend_probe',{}));assert result['marker']=='WO0010_OK' and result['expected_bearer_accepted'] and not result['caller_canary_seen'];report('second namespace read works; caller headers/token are not forwarded')
         await measure('cold_sibling_unavailable' if cold else 'two_backends' if probe else 'one_backend',[gateway,generic]+([probe] if probe and probe.poll() is None else []))
         if probe and args.strict_matrix:
-            stage='strict-isolation-matrix';probe=await strict_outages(base,access,client,probe,launch_probe,probe_port,cold)
+            stage='strict-isolation-matrix';probe=await strict_outages(base,access,client,probe,launch_probe,probe_port,cold,probe_state,probe_events)
         elif probe:
             stage='failure-isolation';old_start=resource(probe)['start'];stop(probe);assert probe.poll() is not None
             async with Client(StreamableHttpTransport(f'http://127.0.0.1:{generic_port}/mcp',headers={'Authorization':'Bearer '+node_token}),timeout=10) as direct:
@@ -241,7 +282,11 @@ async def trial(with_probe,cold=False):
             r=facts(await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}}));assert r['server_version']=='2.5.1';report('generic route recovers after second backend restart')
     stop(gateway);stop(probe) if probe else None;stop(generic)
 async def main():
-    if args.strict_matrix and args.schema_scope_proposal:await proposal_negatives()
+    if args.strict_matrix and args.schema_scope_proposal:
+        await proposal_negatives()
+        from routing_proposal_tests import run_negatives
+        extra=await run_negatives();matrix.extend(extra)
+        for item in extra:print(json.dumps(item),flush=True)
     await trial(False)
     if args.strict_matrix:await trial(True,cold=True)
     await trial(True)
