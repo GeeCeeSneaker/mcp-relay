@@ -13,11 +13,12 @@ if(!token)throw new Error('fixture token required');
 const hash=s=>createHash('sha256').update(s).digest();const expected=hash('Bearer '+token);
 const context=new AsyncLocalStorage();
 const statePath=process.env.WO10_PROBE_STATE;const eventsPath=process.env.WO10_PROBE_EVENTS;
+const components=process.env.WO10_PROBE_COMPONENTS==='1';delete process.env.WO10_PROBE_COMPONENTS;
 delete process.env.WO10_PROBE_STATE;delete process.env.WO10_PROBE_EVENTS;
 const event=kind=>{if(eventsPath)appendFileSync(eventsPath,JSON.stringify({kind})+'\n');};
 const metadataStalled=()=>statePath&&readFileSync(statePath,'utf8')==='stall';
 const handler=toNodeHandler(createMcpHandler(()=>{
- const server=new Server({name:'wo10-probe',version:'1'},{capabilities:{tools:{}}});
+ const server=new Server({name:'wo10-probe',version:'1'},{capabilities:{tools:{},...(components?{resources:{},prompts:{}}:{})}});
  server.setRequestHandler('tools/list',async()=>{
   if(metadataStalled()){
    event('metadata_started');const response=context.getStore().response;
@@ -33,7 +34,23 @@ const handler=toNodeHandler(createMcpHandler(()=>{
   if(r.params.arguments?.tag!==undefined&&typeof r.params.arguments.tag!=='string')throw new Error('invalid fixture tag');
   event('tool_executed');
   return{content:[{type:'text',text:JSON.stringify({marker:'WO0010_OK',backend:'fixture_probe',expected_bearer_accepted:true,caller_canary_seen:!!context.getStore()?.canary})}]};
- });return server;
+ });
+ if(components){
+  server.setRequestHandler('resources/list',async()=>({resources:[{uri:'fixture://component',name:'component',mimeType:'text/plain'}]}));
+  server.setRequestHandler('resources/templates/list',async()=>({resourceTemplates:[{uriTemplate:'fixture://item/{name}',name:'item',mimeType:'text/plain'}]}));
+  server.setRequestHandler('resources/read',async r=>{
+   if(statePath&&readFileSync(statePath,'utf8')==='component_error')throw new Error('owned fixture resource error');
+   if(r.params.uri==='fixture://item/slow')await new Promise(resolve=>setTimeout(resolve,3250));
+   event('resource_executed');return{contents:[{uri:r.params.uri,mimeType:'text/plain',text:'RESOURCE:'+r.params.uri}]};
+  });
+  server.setRequestHandler('prompts/list',async()=>({prompts:[{name:'render',arguments:[{name:'name',required:true}]}]}));
+  server.setRequestHandler('prompts/get',async r=>{
+   if(statePath&&readFileSync(statePath,'utf8')==='component_error')throw new Error('owned fixture prompt error');
+   if(r.params.arguments?.name==='slow')await new Promise(resolve=>setTimeout(resolve,3250));
+   event('prompt_executed');return{messages:[{role:'user',content:{type:'text',text:'PROMPT:'+r.params.arguments?.name}}]};
+  });
+ }
+ return server;
 }));
 createServer(async(req,res)=>{
  if(req.url==='/healthz'){res.writeHead(200).end('ok');return;}

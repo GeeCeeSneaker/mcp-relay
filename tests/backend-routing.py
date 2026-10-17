@@ -8,11 +8,13 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import REQUEST_TIMEOUT
 from mcp_types import HEADER_MISMATCH
 
-ap=argparse.ArgumentParser();ap.add_argument('--gateway-source',required=True);ap.add_argument('--node-exe',default=shutil.which('node'));ap.add_argument('--sample-seconds',type=float,default=30);ap.add_argument('--diagnostic-only',action='store_true',help='Collect isolation outcomes even on the known timeout; never acceptance');ap.add_argument('--schema-scope-proposal',action='store_true',help='Test-only opt-in assembly; not product implementation');ap.add_argument('--strict-matrix',action='store_true',help='Run all cold/warm/concurrent/reconnect negatives; any failed check exits 1');args=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--gateway-source',required=True);ap.add_argument('--node-exe',default=shutil.which('node'));ap.add_argument('--sample-seconds',type=float,default=30);ap.add_argument('--diagnostic-only',action='store_true',help='Collect isolation outcomes even on the known timeout; never acceptance');ap.add_argument('--schema-scope-proposal',action='store_true',help='Test-only opt-in assembly; not product implementation');ap.add_argument('--production-mixed',action='store_true',help='Real candidate config/build_gateway; stock G0 plus opted G1');ap.add_argument('--strict-matrix',action='store_true',help='Run all cold/warm/concurrent/reconnect negatives; any failed check exits 1');args=ap.parse_args()
+if args.production_mixed and (args.schema_scope_proposal or not args.strict_matrix):ap.error('mixed product path requires strict matrix and no prototype substitution')
 if args.strict_matrix and args.diagnostic_only:ap.error('strict matrix cannot use diagnostic-only mode')
 if not args.node_exe or not 1<=args.sample_seconds<=60:raise SystemExit('node executable and 1..60 second sample required')
 repo=pathlib.Path(__file__).resolve().parents[1];source=pathlib.Path(args.gateway_source).resolve()
 root=pathlib.Path(tempfile.mkdtemp(prefix='mcprelay-wo10-')).resolve();processes=[];logs=[];reports=[];stage='prepare';checks=0;isolation=[];matrix=[];baseline=[]
+stock_version_error=None
 
 def report(name):
     global checks
@@ -81,12 +83,12 @@ async def auth(base,password):
         report('real isolated OAuth code/PKCE/login/consent exchange succeeds');return r.json()['access_token']
 async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,probe_state,probe_events):
     threshold=max(.75,5*max(baseline));assert threshold<=2, 'healthy fixture baseline too slow for this regression envelope'
-    async def rpc(name,arguments,c=None,headers=None):
-        if c is not None:return await c.call_tool_mcp(name,arguments)
+    async def rpc(name,arguments,c=None,headers=None,meta=None):
+        if c is not None:return await c.call_tool_mcp(name,arguments,meta=meta)
         h={'Authorization':'Bearer '+access,'X-WO10-Canary':'strict-caller'};h.update(headers or {})
         # The whole fresh session includes the SDK output-schema lookup.
         async with Client(StreamableHttpTransport(base+'/mcp',headers=h),timeout=8,init_timeout=5) as fresh:
-            return await asyncio.wait_for(fresh.call_tool_mcp(name,arguments),10)
+            return await asyncio.wait_for(fresh.call_tool_mcp(name,arguments,meta=meta),10)
     async def check(label,operation,expected,limit):
         start=time.monotonic();ok=False;outcome='unknown'
         try:
@@ -100,6 +102,30 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
     failed=lambda r:r.is_error
     generic_args={'capability':'node_status','args':{}}
     mode='cold_before_discovery' if cold else 'warm_after_discovery'
+    if args.production_mixed:
+        if not cold:
+            await check(mode+'/real_component_resources',client.list_resources(),lambda items:any(str(r.uri)=='fixture://fixture_backend/component' for r in items),4)
+            await check(mode+'/real_component_templates',client.list_resource_templates(),lambda items:any(t.uri_template=='fixture://fixture_backend/item/{name}' for t in items),4)
+            await check(mode+'/real_component_prompts',client.list_prompts(),lambda items:any(p.name=='fixture_backend_render' for p in items),4)
+            await check(mode+'/resource_namespace_identity',client.read_resource('fixture://fixture_backend/component'),lambda value:'RESOURCE:fixture://component' in str(value),4)
+            await check(mode+'/template_namespace_identity',client.read_resource('fixture://fixture_backend/item/example'),lambda value:'RESOURCE:fixture://item/example' in str(value),4)
+            await check(mode+'/prompt_namespace_identity',client.get_prompt('fixture_backend_render',{'name':'example'}),lambda value:'PROMPT:example' in str(value),4)
+            async def long_component(kind):
+                start=time.monotonic()
+                value=await client.read_resource('fixture://fixture_backend/item/slow') if kind=='resource' else await client.get_prompt('fixture_backend_render',{'name':'slow'})
+                return 'slow' in str(value) and time.monotonic()-start>=3.1
+            await check(mode+'/resource_execution_outlives_metadata_budget',long_component('resource'),lambda value:value,6)
+            await check(mode+'/prompt_execution_outlives_metadata_budget',long_component('prompt'),lambda value:value,6)
+            probe_state.write_text('component_error')
+            async def component_error(kind):
+                try:
+                    if kind=='resource':await client.read_resource('fixture://fixture_backend/component')
+                    else:await client.get_prompt('fixture_backend_render',{'name':'example'})
+                except MCPError:return True
+                return False
+            await check(mode+'/resource_error_not_swallowed',component_error('resource'),lambda value:value,4)
+            await check(mode+'/prompt_error_not_swallowed',component_error('prompt'),lambda value:value,4)
+            probe_state.write_text('ready')
     async def delayed_execution():
         # Windows PowerShell initialization plus the 4s command can outlast the
         # existing 7s initial-output wait. Use the pinned Node directly via CMD;
@@ -139,6 +165,12 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
         probe=launch_probe();await ready(f'http://127.0.0.1:{probe_port}/healthz',probe)
         probe.initial_start=resource(probe)['start'];assert probe.initial_start!=old_start
         await check(f'{mode}/cycle{cycle}/reconnected',rpc('fixture_backend_probe',{}),lambda r:not r.is_error and facts(r)['marker']=='WO0010_OK' and not facts(r)['caller_canary_seen'],threshold)
+        if args.production_mixed:
+            before_calls=probe_events.read_text().count('tool_executed')
+            async def opted_version():
+                result=await rpc('fixture_backend_probe',{},meta={'fastmcp':{'version':{'eq':'1'}}})
+                return result.is_error and probe_events.read_text().count('tool_executed')==before_calls
+            await check(f'{mode}/cycle{cycle}/opted_version_zero_execution',opted_version(),lambda value:value,4)
         await check(f'{mode}/cycle{cycle}/matching_header',rpc('fixture_backend_probe',{'tag':'matching'},headers={'Mcp-Param-fixture-tag':'matching'}),lambda r:not r.is_error,threshold)
         async def mismatch():
             try:await rpc('fixture_backend_probe',{'tag':'body'},headers={'Mcp-Param-fixture-tag':'wrong'})
@@ -146,6 +178,12 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
             except httpx2.HTTPStatusError as e:return e.response.status_code==400
             return False
         await check(f'{mode}/cycle{cycle}/mismatched_header',mismatch(),lambda rejected:rejected,4)
+    if args.production_mixed and cold:
+        # G1 is now alive but advertises only tools: these are genuine absent
+        # method controls, not an unavailable-backend empty catalog.
+        await check(mode+'/absent_opted_resource_methods',client.list_resources(),lambda items:items==[],4)
+        await check(mode+'/absent_opted_template_methods',client.list_resource_templates(),lambda items:items==[],4)
+        await check(mode+'/absent_opted_prompt_methods',client.list_prompts(),lambda items:items==[],4)
     def events():
         records=[json.loads(line)['kind'] for line in probe_events.read_text().splitlines()]
         return {name:records.count(name) for name in ['metadata_started','metadata_closed','tool_executed']}
@@ -153,6 +191,12 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
     stalled=asyncio.create_task(check(mode+'/stalled_metadata/refused',rpc('fixture_backend_probe',{'tag':'matching'},headers={'Mcp-Param-fixture-tag':'matching'}),failed,4))
     await asyncio.sleep(.1)
     await check(mode+'/stalled_metadata/healthy_sibling',rpc('fixture_node_invoke_read',generic_args,client),healthy,threshold)
+    if args.production_mixed:
+        await check(mode+'/stalled_metadata/fresh_healthy_sibling',rpc('fixture_node_invoke_read',generic_args),healthy,threshold)
+        # Compare with this run's actual default-off control, not an assumed
+        # version error: pinned stock dispatch accepts this node's metadata.
+        assert stock_version_error is not None
+        await check(mode+'/stalled_metadata/stock_version_metadata_baseline',rpc('fixture_node_invoke_read',generic_args,meta={'fastmcp':{'version':{'eq':'1'}}}),lambda r:r.is_error==stock_version_error and (r.is_error or healthy(r)),4)
     await stalled
     async def closed():
         for _ in range(40):
@@ -174,6 +218,8 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
         return False
     await check(mode+'/cancelled_metadata/caller_cancelled',cancellation(),lambda value:value,1)
     await check(mode+'/cancelled_metadata/healthy_sibling',rpc('fixture_node_invoke_read',generic_args,client),healthy,threshold)
+    if args.production_mixed:
+        await check(mode+'/cancelled_metadata/fresh_healthy_sibling',rpc('fixture_node_invoke_read',generic_args),healthy,threshold)
     await check(mode+'/cancelled_metadata/closed_zero_execution',closed(),lambda value:value,3)
     probe_state.write_text('ready')
     await check(mode+'/stalled_metadata/recovered',rpc('fixture_backend_probe',{}),lambda r:not r.is_error and facts(r)['marker']=='WO0010_OK',threshold)
@@ -205,7 +251,7 @@ async def proposal_negatives():
         else:matrix.append({'case':'prototype_missing_schema_fail_closed','pass':False})
 
 async def trial(with_probe,cold=False):
-    global stage
+    global stage,stock_version_error
     stage='startup';generic_port,probe_port,gateway_port=port(),port(),port();node_token,probe_token,password,key=(secrets.token_hex(32) for _ in range(4))
     e=env();e.update(MCPRELAY_BRIDGE_TOKEN=node_token,MCPRELAY_ALLOWED_DIRS=str(root),MCPRELAY_TARGETS=str(root/'targets.json'),MCPRELAY_AUDIT_LOG=str(root/'audit'/'audit.log'))
     if os.name=='nt':
@@ -217,6 +263,7 @@ async def trial(with_probe,cold=False):
     probe_events=root/('probe-events-'+str(len(logs))+'.jsonl');probe_events.write_text('')
     def launch_probe():
         e=env();e.update(WO10_PROBE_TOKEN=probe_token,WO10_PROBE_STATE=str(probe_state),WO10_PROBE_EVENTS=str(probe_events))
+        if args.production_mixed and not cold:e['WO10_PROBE_COMPONENTS']='1'
         return launch('probe',[args.node_exe,str(repo/'tests/routing-probe.mjs'),str(probe_port)],e)
     probe=launch_probe() if with_probe else None
     if probe:
@@ -228,6 +275,8 @@ async def trial(with_probe,cold=False):
     if cold:stop(probe)
     backends={'fixture_node':{'url':f'http://127.0.0.1:{generic_port}/mcp','auth':{'type':'bearer','token':node_token}}}
     if with_probe:backends['fixture_backend']={'url':f'http://127.0.0.1:{probe_port}/mcp','auth':{'type':'bearer','token':probe_token}}
+    if with_probe and args.production_mixed:
+        backends['fixture_backend'].update(isolate_metadata=True,metadata_profile='bounded-v1')
     trial_id=str(len(logs))
     base=f'http://127.0.0.1:{gateway_port}';config={'server':{'public_url':base,'host':'127.0.0.1','port':gateway_port},'auth':{'encryption_key':key,'users':[{'username':'fixture','password':password}],'allowed_client_redirect_uris':['http://127.0.0.1:*/callback']},'storage':{'path':str(root/('gateway-'+trial_id+'.db'))},'backends':backends}
     cfg=root/('gateway-'+trial_id+'.yaml');cfg.write_text(yaml.safe_dump(config))
@@ -247,6 +296,10 @@ async def trial(with_probe,cold=False):
             for _ in range(5):
                 start=time.monotonic();assert facts(await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}}))['server_version']=='2.5.1';baseline.append(time.monotonic()-start)
             print(json.dumps({'healthy_baseline_seconds':baseline,'healthy_limit_seconds':max(.75,5*max(baseline))}),flush=True)
+            if args.production_mixed:
+                control=await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}},meta={'fastmcp':{'version':{'eq':'1'}}})
+                stock_version_error=control.is_error
+                print(json.dumps({'stock_version_metadata_control_error':stock_version_error}),flush=True)
         if probe and not cold:
             assert 'fixture_backend_probe' in tools;result=facts(await client.call_tool_mcp('fixture_backend_probe',{}));assert result['marker']=='WO0010_OK' and result['expected_bearer_accepted'] and not result['caller_canary_seen'];report('second namespace read works; caller headers/token are not forwarded')
         await measure('cold_sibling_unavailable' if cold else 'two_backends' if probe else 'one_backend',[gateway,generic]+([probe] if probe and probe.poll() is None else []))
@@ -298,7 +351,7 @@ async def main():
     await trial(True)
 try:
     asyncio.run(main());assert all(p.poll() is not None for p in processes);report('all temporary fixture processes completed; no product code or persistent process added')
-    result={'checks':checks,'resource':reports,'isolation':isolation,'matrix':matrix,'matrix_failed':sum(not x['pass'] for x in matrix),'prototype':args.schema_scope_proposal,'wo_acceptance':'BLOCKED','diagnostic_only':args.diagnostic_only,'normal_central_e2e':'NOT_RUN','ssh_tunnel_seam':'NOT_RUN','permanent_process_delta':0}
+    result={'checks':checks,'resource':reports,'isolation':isolation,'matrix':matrix,'matrix_failed':sum(not x['pass'] for x in matrix),'prototype':args.schema_scope_proposal,'production_mixed':args.production_mixed,'wo_acceptance':'BLOCKED','diagnostic_only':args.diagnostic_only,'normal_central_e2e':'NOT_RUN','ssh_tunnel_seam':'NOT_RUN','permanent_process_delta':0}
     print(json.dumps(result),flush=True);(root/'result.json').write_text(json.dumps(result,indent=2));code=1 if result['matrix_failed'] else 0
 except Exception as e:
     print('FAIL '+stage+' '+type(e).__module__+'.'+type(e).__name__,flush=True);(root/'failure.txt').write_text(type(e).__name__+': '+str(e));(root/'traceback.txt').write_text(traceback.format_exc());code=1
