@@ -6,6 +6,7 @@ on:
       - 'tests/metadata_activation.py'
       - 'tests/backend-routing.py'
       - 'tests/routing-probe.mjs'
+      - 'tests/routing_stock_compatibility.py'
       - 'tests/prepare-routing-gateway.py'
       - '.github/workflows/routing-product-implementation.yml'
 permissions:

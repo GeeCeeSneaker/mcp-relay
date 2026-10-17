@@ -8,9 +8,10 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import REQUEST_TIMEOUT
 from mcp_types import HEADER_MISMATCH
 
-ap=argparse.ArgumentParser();ap.add_argument('--gateway-source',required=True);ap.add_argument('--node-exe',default=shutil.which('node'));ap.add_argument('--sample-seconds',type=float,default=30);ap.add_argument('--diagnostic-only',action='store_true',help='Collect isolation outcomes even on the known timeout; never acceptance');ap.add_argument('--schema-scope-proposal',action='store_true',help='Test-only opt-in assembly; not product implementation');ap.add_argument('--production-mixed',action='store_true',help='Real candidate config/build_gateway; stock G0 plus opted G1');ap.add_argument('--strict-matrix',action='store_true',help='Run all cold/warm/concurrent/reconnect negatives; any failed check exits 1');args=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--gateway-source',required=True);ap.add_argument('--node-exe',default=shutil.which('node'));ap.add_argument('--sample-seconds',type=float,default=30);ap.add_argument('--diagnostic-only',action='store_true',help='Collect isolation outcomes even on the known timeout; never acceptance');ap.add_argument('--schema-scope-proposal',action='store_true',help='Test-only opt-in assembly; not product implementation');ap.add_argument('--production-mixed',action='store_true',help='Real candidate config/build_gateway; stock G0 plus opted G1');ap.add_argument('--strict-matrix',action='store_true',help='Run all cold/warm/concurrent/reconnect negatives; any failed check exits 1');ap.add_argument('--stock-compatibility-only',action='store_true',help='Focused R1 regression, not the full product matrix');args=ap.parse_args()
 if args.production_mixed and (args.schema_scope_proposal or not args.strict_matrix):ap.error('mixed product path requires strict matrix and no prototype substitution')
 if args.strict_matrix and args.diagnostic_only:ap.error('strict matrix cannot use diagnostic-only mode')
+if args.stock_compatibility_only and not args.production_mixed:ap.error('focused R1 mode requires actual product assembly')
 if not args.node_exe or not 1<=args.sample_seconds<=60:raise SystemExit('node executable and 1..60 second sample required')
 repo=pathlib.Path(__file__).resolve().parents[1];source=pathlib.Path(args.gateway_source).resolve()
 root=pathlib.Path(tempfile.mkdtemp(prefix='mcprelay-wo10-')).resolve();processes=[];logs=[];reports=[];stage='prepare';checks=0;isolation=[];matrix=[];baseline=[]
@@ -168,7 +169,7 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
         if args.production_mixed:
             before_calls=probe_events.read_text().count('tool_executed')
             async def opted_version():
-                result=await rpc('fixture_backend_probe',{},meta={'fastmcp':{'version':{'eq':'1'}}})
+                result=await rpc('fixture_backend_probe',{},meta={'fastmcp':{'version':'1'}})
                 return result.is_error and probe_events.read_text().count('tool_executed')==before_calls
             await check(f'{mode}/cycle{cycle}/opted_version_zero_execution',opted_version(),lambda value:value,4)
         await check(f'{mode}/cycle{cycle}/matching_header',rpc('fixture_backend_probe',{'tag':'matching'},headers={'Mcp-Param-fixture-tag':'matching'}),lambda r:not r.is_error,threshold)
@@ -196,7 +197,7 @@ async def strict_outages(base,access,client,probe,launch_probe,probe_port,cold,p
         # Compare with this run's actual default-off control, not an assumed
         # version error: pinned stock dispatch accepts this node's metadata.
         assert stock_version_error is not None
-        await check(mode+'/stalled_metadata/stock_version_metadata_baseline',rpc('fixture_node_invoke_read',generic_args,meta={'fastmcp':{'version':{'eq':'1'}}}),lambda r:r.is_error==stock_version_error and (r.is_error or healthy(r)),4)
+        await check(mode+'/stalled_metadata/stock_version_metadata_baseline',rpc('fixture_node_invoke_read',generic_args,meta={'fastmcp':{'version':'1'}}),lambda r:r.is_error==stock_version_error and (r.is_error or healthy(r)),4)
     await stalled
     async def closed():
         for _ in range(40):
@@ -297,7 +298,7 @@ async def trial(with_probe,cold=False):
                 start=time.monotonic();assert facts(await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}}))['server_version']=='2.5.1';baseline.append(time.monotonic()-start)
             print(json.dumps({'healthy_baseline_seconds':baseline,'healthy_limit_seconds':max(.75,5*max(baseline))}),flush=True)
             if args.production_mixed:
-                control=await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}},meta={'fastmcp':{'version':{'eq':'1'}}})
+                control=await client.call_tool_mcp('fixture_node_invoke_read',{'capability':'node_status','args':{}},meta={'fastmcp':{'version':'1'}})
                 stock_version_error=control.is_error
                 print(json.dumps({'stock_version_metadata_control_error':stock_version_error}),flush=True)
         if probe and not cold:
@@ -346,9 +347,15 @@ async def main():
         from routing_proposal_tests import run_negatives
         extra=await run_negatives();matrix.extend(extra)
         for item in extra:print(json.dumps(item),flush=True)
-    await trial(False)
-    if args.strict_matrix:await trial(True,cold=True)
-    await trial(True)
+    if not args.stock_compatibility_only:
+        await trial(False)
+        if args.strict_matrix:await trial(True,cold=True)
+        await trial(True)
+    if args.production_mixed:
+        from types import SimpleNamespace
+        from routing_stock_compatibility import run
+        extra=await run(SimpleNamespace(root=root,repo=repo,source=source,node_exe=args.node_exe,port=port,env=env,launch=launch,ready=ready,auth=auth,stop=stop))
+        matrix.extend(extra)
 try:
     asyncio.run(main());assert all(p.poll() is not None for p in processes);report('all temporary fixture processes completed; no product code or persistent process added')
     result={'checks':checks,'resource':reports,'isolation':isolation,'matrix':matrix,'matrix_failed':sum(not x['pass'] for x in matrix),'prototype':args.schema_scope_proposal,'production_mixed':args.production_mixed,'wo_acceptance':'BLOCKED','diagnostic_only':args.diagnostic_only,'normal_central_e2e':'NOT_RUN','ssh_tunnel_seam':'NOT_RUN','permanent_process_delta':0}

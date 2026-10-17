@@ -28,17 +28,17 @@ the product test uses `create_app` without replacing the production factory.
   validation and original execution remain in the SDK path.
 
 `bounded-v1` is an isolated proving profile: connect 250 ms, HTTP read/write/pool
-2 s, metadata operation 3 s. In an activated mixed gateway, aggregate component
-catalog calls on each mount have a 250 ms budget. A slow mount may therefore be
-omitted from a catalog, including a healthy but slow stock mount; an empty result
-is neither a complete inventory nor a liveness assertion. This is necessary for
-fresh Python SDK global discovery to stay bounded. Stock version metadata still
-takes the real global catalog path, so it can wait for bounded sibling discovery.
+2 s, metadata operation 3 s. Following R1, aggregate component catalog calls on
+**opted mounts only** have a 250 ms budget. A slow opted mount can be omitted;
+an empty opted catalog is neither a complete inventory nor a liveness assertion.
+Non-opted mounts retain their original waits and complete descriptors. Stock
+version metadata still takes the real global catalog path, so it can wait for
+both its own supported discovery and bounded opted sibling discovery.
 These budgets are not WAN acceptance criteria. Actual tool/resource/prompt
 execution is not given the metadata deadline. Default-off gateways do not acquire
 the dependency gate or aggregate-catalog middleware.
 
-## Local exact-source evidence
+## Original first-slice evidence (bbcb207, before R1)
 
 Windows, Python 3.12.14, Node 24.21.0, FastMCP 4.0.5 / MCP 2.3.0. Activation also
 checks mcp-types 2.3.0, httpx2/httpcore2 2.13.0 and pydantic 2.14.1. Dependencies
@@ -69,12 +69,62 @@ unchanged 4 s failure bound. Resource/prompt execution took 3.312/3.297 s and to
 execution 4.297–4.625 s, exceeding the metadata budget successfully. Component
 namespace/URI/name identity, missing methods and explicit non-tool errors passed.
 
+R1 found that the original all-mount 250 ms catalog deadline violated stock
+compatibility; acknowledging the omission did not authorize it. Those timings
+are historical evidence, not acceptance of the original implementation.
+
 The earlier 87-case run contained two red assertions that incorrectly assumed
 stock requested-version metadata must fail. The test now compares against the
 actual stock-only control instead of changing product behavior or thresholds.
 Prior red evidence remains preserved. The old prototype matrix is separate;
 the new product workflow does not invoke the prototype replacement. GitHub can
 still schedule older workflows from the cumulative PR diff.
+
+## R1 correction and actual slow-stock regression
+
+[Independent review6230272793](https://github.com/GeeCeeSneaker/mcp-relay/pull/42#issuecomment-6230272793)
+requires retaining the original non-opted catalog path. Product correction is
+limited to mounting `CatalogBound` only when that backend is opted in; no timeout
+or dependency was increased. The new regression is part of the same actual
+product workflow and invokes `create_app` without substituting its builder.
+
+`routing_stock_compatibility.py` hosts an owned bearer-authenticated HTTP G0 with
+350 ms metadata delay on all four catalog families, two real versions of one
+header-annotated tool, a resource, template and prompt. A stock-only gateway is
+the control. Both real versions must return their distinct version markers
+before any mixed comparison can pass. The SDK wire version is a string under
+`_meta.fastmcp.version`; prior dict-valued metadata was not this proof.
+
+For G1 healthy/refused/stalled/cancelled, compare all stock descriptor fields
+against the control, confirm the delayed stock catalog actually completed, then
+exercise both real versions on fresh authenticated sessions with matching header,
+mismatched header and malformed arguments (zero execution on rejection), and
+resource/template/prompt dispatch. G1 stalls all four metadata families; caller
+cancellation must reach G1 and close with zero execution. CI logs expose canonical
+descriptor hashes/counts and distinct real-version control results. The stock
+global path is allowed its original supported wait; its measured latency is
+reported rather than deleting slow components to meet the fast fixture's bound.
+
+Focused reproduction command adds `--stock-compatibility-only` to the product
+command above. It is not full acceptance. The complete workflow runs both the
+original isolation matrix and these regressions. Exact head, red baseline and
+Windows/Linux terminal results are recorded in the R1 handoff on PR42/#38.
+
+Local fixed-source R1 result (2026-10-17 UTC): **18 activation tests PASS;
+134 mixed cases / 0 failures**, comprising the retained 91 isolation cases and
+43 slow-stock cases, plus 16 setup/resource checks. The previous bbcb207 applied
+source fails 20/43 focused cases: all 16 full-descriptor comparisons and four
+header-rejection controls. This red baseline is preserved, not reclassified as
+passing diagnostic evidence. The initial new harness used the wrong dict-valued
+wire version and failed its stock-only control; corrected string-valued control
+proves both actual versions before comparing mixed results.
+
+Corrected local slow-stock catalogs took 375–391 ms, retaining the deliberately
+slow descriptors. Fresh real-version/header calls took 1.109–1.297 s in mixed
+states versus 1.125–1.406 s in stock-only controls. This is an observed stock
+discovery wait, not a claim that every stock call satisfies the separate fast
+generic fixture's unchanged 750 ms bound. Selected opted metadata deadlines,
+long-execution controls and owned cleanup still pass; permanent process delta 0.
 
 ## Remaining binding gates
 

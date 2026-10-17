@@ -70,7 +70,7 @@ diff --git a/src/mcp_gateway/gateway.py b/src/mcp_gateway/gateway.py
 +                name=f"proxy-{name}",
 +                mask_error_details=True,
 +            )
-+        if opted:
++        if name in opted:
 +            from .bounded_metadata import CatalogBound
 +            proxy.add_middleware(CatalogBound())
          mcp.mount(proxy, namespace=name)
@@ -179,8 +179,8 @@ new file mode 100644
 +class CatalogBound(Middleware):
 +    """Bound aggregate discovery only, never selected lookup or real execution.
 +
-+    A real global catalog must wait for sibling discovery; omit a timed-out
-+    mount explicitly rather than let an unrelated fresh client's SDK wait2s.
++    Installed only on opted mounts. A timed-out opted mount can be omitted;
++    non-opted catalogs retain their original supported waits and descriptors.
 +    The short proving budget is NOT a production/WAN completeness assertion.
 +    """
 +    async def bounded(self,context,call_next):
