@@ -121,16 +121,18 @@ namespace MCPRelay
     // last handle (app exit or crash) does the same.
     static class Jobs
     {
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern IntPtr CreateJobObject(IntPtr attrs, string name);
-        [DllImport("kernel32.dll")]
+        [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int size);
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-        [DllImport("kernel32.dll")]
+        [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool TerminateJobObject(IntPtr job, uint exitCode);
-        [DllImport("kernel32.dll")]
-        public static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
         [StructLayout(LayoutKind.Sequential)]
         struct JOBOBJECT_BASIC_LIMIT_INFORMATION
@@ -152,24 +154,46 @@ namespace MCPRelay
             public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
         }
 
-        public static IntPtr CreateKillOnClose(Process p)
+        // Instance-local Win32 seam for deterministic failures in the compiled
+        // supervisor tests. Production always uses these native implementations;
+        // no environment switch, global override, or alternate process launcher.
+        internal class Calls
         {
-            IntPtr job = CreateJobObject(IntPtr.Zero, null);
-            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            // KILL_ON_JOB_CLOSE | BREAKAWAY_OK. Breakaway is only used by the process helper's
-            // spawn (ADR-0008): programs started through it must survive a node server restart.
-            // Everything else (start_process sessions, ssh) stays in the job and dies with it.
-            info.Basic.LimitFlags = 0x2000 | 0x800;
-            SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
-            AssignProcessToJobObject(job, p.Handle);
-            return job;
+            public virtual IntPtr Create() { return CreateJobObject(IntPtr.Zero, null); }
+            public virtual bool Configure(IntPtr job)
+            {
+                var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                // Preserve KILL_ON_JOB_CLOSE | BREAKAWAY_OK (ADR-0008).
+                info.Basic.LimitFlags = 0x2000 | 0x800;
+                return SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
+            }
+            public virtual bool Assign(IntPtr job, Process process) { return AssignProcessToJobObject(job, process.Handle); }
+            public virtual bool Terminate(IntPtr job) { return TerminateJobObject(job, 1); }
+            public virtual bool Close(IntPtr job) { return CloseHandle(job); }
+            public virtual uint WaitForExit(Process process) { return WaitForSingleObject(process.Handle, 2000); }
+            public virtual int Error { get { return Marshal.GetLastWin32Error(); } }
         }
 
-        public static void Kill(IntPtr job)
+        internal static void CreateConfigured(ref IntPtr job, Calls calls)
+        {
+            job = calls.Create();
+            if (job == IntPtr.Zero) throw new Win32Exception(calls.Error, "CreateJobObject failed");
+            if (!calls.Configure(job)) throw new Win32Exception(calls.Error, "SetInformationJobObject failed");
+        }
+
+        internal static void Assign(IntPtr job, Process process, Calls calls)
+        {
+            if (!calls.Assign(job, process)) throw new Win32Exception(calls.Error, "AssignProcessToJobObject failed");
+        }
+
+        internal static void Kill(ref IntPtr job, Calls calls)
         {
             if (job == IntPtr.Zero) return;
-            TerminateJobObject(job, 1);
-            CloseHandle(job);
+            // Keep the exact handle on either failure. Closing after a failed
+            // terminate would discard evidence and let a replacement race it.
+            if (!calls.Terminate(job)) throw new Win32Exception(calls.Error, "TerminateJobObject failed");
+            if (!calls.Close(job)) throw new Win32Exception(calls.Error, "CloseHandle failed");
+            job = IntPtr.Zero;
         }
     }
 
@@ -179,12 +203,14 @@ namespace MCPRelay
         public readonly string Name;
         readonly Func<ProcessStartInfo> makeStartInfo;
         readonly int[] backoffSeconds;
+        readonly Jobs.Calls jobCalls;
         readonly object gate = new object();
         Process proc;
         IntPtr job = IntPtr.Zero;
         System.Threading.Timer restartTimer;
         int attempt;
         bool stopped = true;
+        string ownershipError;
         public DateTime? RunningSince;
         public int Restarts;
         public string LastExit = "";
@@ -192,17 +218,48 @@ namespace MCPRelay
         public event Action Exited;
 
         public Supervised(string name, Func<ProcessStartInfo> makeStartInfo, int[] backoffSeconds)
+            : this(name, makeStartInfo, backoffSeconds, new Jobs.Calls()) { }
+
+        internal Supervised(string name, Func<ProcessStartInfo> makeStartInfo, int[] backoffSeconds, Jobs.Calls jobCalls)
         {
             Name = name;
             this.makeStartInfo = makeStartInfo;
             this.backoffSeconds = backoffSeconds;
+            this.jobCalls = jobCalls;
         }
 
-        public bool IsRunning { get { lock (gate) { return proc != null && !proc.HasExited; } } }
+        public bool OwnershipBlocked { get { lock (gate) { return ownershipError != null; } } }
+        // A physically alive but uncertain child must never look successfully
+        // supervised. The error is latched for this instance, even after cleanup.
+        public bool IsRunning { get { lock (gate) { return ownershipError == null && proc != null && !proc.HasExited; } } }
+
+        void BlockOwnership(Exception error)
+        {
+            if (ownershipError == null) ownershipError = error.Message;
+            stopped = true;
+            RunningSince = null;
+            if (restartTimer != null) { restartTimer.Dispose(); restartTimer = null; }
+            Emit("ownership blocked: " + error.Message + "; replacement disabled");
+        }
+
+        bool StopOwned()
+        {
+            try
+            {
+                Jobs.Kill(ref job, jobCalls);
+                // Process.WaitForExit can synchronously invoke Exited, whose
+                // callback also takes gate. Wait on the held native handle to
+                // avoid reversing the Process-event/gate lock order.
+                if (proc != null && jobCalls.WaitForExit(proc) != 0)
+                    throw new InvalidOperationException("Owned process exit unconfirmed");
+                return true;
+            }
+            catch (Exception error) { BlockOwnership(error); return false; }
+        }
 
         public void Start()
         {
-            lock (gate) { stopped = false; }
+            lock (gate) { if (ownershipError != null) return; stopped = false; }
             Launch();
         }
 
@@ -210,7 +267,7 @@ namespace MCPRelay
         {
             lock (gate)
             {
-                if (stopped || (proc != null && !proc.HasExited)) return;
+                if (stopped || ownershipError != null || (proc != null && !proc.HasExited)) return;
                 ProcessStartInfo psi;
                 try { psi = makeStartInfo(); }
                 catch (Exception e) { Emit("cannot start: " + e.Message); ScheduleRestart(); return; }
@@ -220,24 +277,47 @@ namespace MCPRelay
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
                 psi.StandardErrorEncoding = Encoding.UTF8;
+                // Configure containment BEFORE any process can start. A create /
+                // setup failure therefore has no uncontained child to replace.
+                try { Jobs.CreateConfigured(ref job, jobCalls); }
+                catch (Exception error) { BlockOwnership(error); StopOwned(); return; }
                 var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
                 p.OutputDataReceived += (s, e) => { if (e.Data != null) Emit(e.Data); };
                 p.ErrorDataReceived += (s, e) => { if (e.Data != null) Emit(e.Data); };
                 p.Exited += OnExited;
+                try { p.Start(); }
+                catch (Exception error)
+                {
+                    p.Dispose();
+                    Emit("start failed: " + error.Message);
+                    if (StopOwned()) ScheduleRestart();
+                    return;
+                }
+                proc = p;
+                bool assigned = false;
                 try
                 {
-                    p.Start();
-                    job = Jobs.CreateKillOnClose(p);
+                    Jobs.Assign(job, p, jobCalls);
+                    assigned = true;
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
-                    proc = p;
                     RunningSince = DateTime.Now;
                     Emit("started (pid " + p.Id + ")");
                 }
                 catch (Exception e)
                 {
-                    Emit("start failed: " + e.Message);
-                    ScheduleRestart();
+                    BlockOwnership(e);
+                    // Assignment failure is NOT containment. Retain the exact
+                    // Process handle, kill only that root if still unassigned,
+                    // and latch the uncertainty even if root cleanup succeeds.
+                    // Children that raced before assignment cannot be certified.
+                    if (!assigned)
+                    {
+                        Emit("uncontained start (pid " + p.Id + "); no automatic recovery");
+                        try { if (!p.HasExited) p.Kill(); }
+                        catch (Exception cleanup) { BlockOwnership(cleanup); }
+                    }
+                    StopOwned();
                 }
             }
             var h = Exited; if (h != null) h();
@@ -255,16 +335,17 @@ namespace MCPRelay
                 if (longRun) attempt = 0;
                 LastExit = DateTime.Now.ToString("HH:mm:ss") + " (code " + code + ")";
                 Emit("exited with code " + code);
-                Jobs.Kill(job); job = IntPtr.Zero;
-                proc = null;
+                bool cleaned = StopOwned();
+                if (cleaned) { proc = null; p.Dispose(); }
                 RunningSince = null;
-                if (!stopped) { Restarts++; ScheduleRestart(); }
+                if (cleaned && !stopped && ownershipError == null) { Restarts++; ScheduleRestart(); }
             }
             var h = Exited; if (h != null) h();
         }
 
         void ScheduleRestart()
         {
+            if (stopped || ownershipError != null) return;
             int delay = backoffSeconds[Math.Min(attempt, backoffSeconds.Length - 1)];
             attempt++;
             Emit("restarting in " + delay + "s");
@@ -277,10 +358,11 @@ namespace MCPRelay
         {
             lock (gate)
             {
+                if (ownershipError != null) return;
                 attempt = 0;
                 if (proc == null) { if (!stopped) { if (restartTimer != null) restartTimer.Dispose(); ThreadPool.QueueUserWorkItem(_ => Launch()); } return; }
                 Emit("restart requested");
-                Jobs.Kill(job); job = IntPtr.Zero;
+                StopOwned();
             }
         }
 
@@ -290,7 +372,7 @@ namespace MCPRelay
             {
                 stopped = true;
                 if (restartTimer != null) restartTimer.Dispose();
-                Jobs.Kill(job); job = IntPtr.Zero;
+                StopOwned();
             }
         }
 
@@ -544,11 +626,12 @@ namespace MCPRelay
                 return;
             }
             bool bridgeRunning = bridge != null && bridge.IsRunning;
-            bridgeLabel.Text = "Local server: " + (bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
+            bridgeLabel.Text = "Local server: " + (bridge != null && bridge.OwnershipBlocked ? "ownership blocked; inspect log" : bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
             bool connected = TunnelConnected;
-            tunnelLabel.Text = "Tunnel to VPS: " + (connected ? "connected" + Since(tunnelAuthAt) : tunnel != null && tunnel.IsRunning ? "connecting" : "disconnected") + RestartInfo(tunnel);
+            tunnelLabel.Text = "Tunnel to VPS: " + (tunnel != null && tunnel.OwnershipBlocked ? "ownership blocked; inspect log" : connected ? "connected" + Since(tunnelAuthAt) : tunnel != null && tunnel.IsRunning ? "connecting" : "disconnected") + RestartInfo(tunnel);
             publicLabel.Text = config.PublicUrl == "" ? "" : "Public endpoint: " + (!publicChecked ? "checking" : publicUp ? "reachable" : "unreachable") + "  (" + config.PublicUrl + ")";
-            if (bridgeRunning && dcUp && connected) SetTray(iconOk, "MCPRelay - connected");
+            if ((bridge != null && bridge.OwnershipBlocked) || (tunnel != null && tunnel.OwnershipBlocked)) SetTray(iconBad, "MCPRelay - ownership blocked");
+            else if (bridgeRunning && dcUp && connected) SetTray(iconOk, "MCPRelay - connected");
             else if (bridgeRunning || (tunnel != null && tunnel.IsRunning)) SetTray(iconWarn, "MCPRelay - " + (!dcUp ? "starting bridge" : "connecting tunnel"));
             else SetTray(iconBad, "MCPRelay - stopped");
         }

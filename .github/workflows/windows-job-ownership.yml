@@ -1,0 +1,29 @@
+name: windows-job-ownership
+on:
+  pull_request:
+    paths:
+      - 'app/windows/MCPRelay.cs'
+      - 'tests/JobOwnershipTests.cs'
+      - 'tests/windows_job_checks.py'
+      - 'tests/SecondForwardProposal.cs'
+      - 'tests/second_forward_fixture.mjs'
+      - '.github/workflows/windows-job-ownership.yml'
+permissions:
+  contents: read
+jobs:
+  actual-supervisor-native-failures:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Actual app, forced native failures and disposable lifecycle
+        shell: pwsh
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python tests/windows_job_checks.py --node-exe (Get-Command node).Source
