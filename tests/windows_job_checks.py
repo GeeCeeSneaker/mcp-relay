@@ -5,7 +5,7 @@ Never runs the tray/Config.Load, build installer, installed services or SSH.
 import argparse,json,os,pathlib,subprocess,sys,tempfile
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--node-exe',required=True);args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--node-exe',required=True);ap.add_argument('--r2-only',action='store_true');args=ap.parse_args()
     if os.name!='nt':raise SystemExit('Windows-native evidence requires Windows; not a Linux pass')
     repo=pathlib.Path(__file__).resolve().parents[1]
     root=pathlib.Path(tempfile.mkdtemp(prefix='wo10-native-job-')).resolve()
@@ -36,17 +36,19 @@ def main():
         return subprocess.CompletedProcess(command,code,output,'')
     compile('MCPRelay-candidate.exe')
     native=compile('native-tests.exe','JobOwnershipTests','JobOwnershipTests.cs')
-    result=execute([str(native),str(root/'native')],'native',90)
+    result=execute([str(native)]+(['r2-only'] if args.r2_only else [])+[str(root/'native')],'native',90)
     if result.returncode:raise RuntimeError('native ownership failure tests failed')
-    summary=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
-    assert summary['native_checks']==69 and summary['owned_cleanup'] and not summary['fallback_used'] and summary['real_win32']
+    summary=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{"native_checks":')))
+    assert summary['r2_cases']==2 and summary['owned_cleanup'] and not summary['fallback_used'] and summary['real_win32']
+    if args.r2_only:return 0
+    assert summary['native_checks']==92
     lifecycle=compile('lifecycle-tests.exe','SecondForwardProposal','SecondForwardProposal.cs')
     (root/'lifecycle').mkdir()
     result=execute([str(lifecycle),str(pathlib.Path(args.node_exe).resolve()),str(repo/'tests/second_forward_fixture.mjs'),str(root/'lifecycle')],'lifecycle',60)
     if result.returncode:raise RuntimeError('actual supervisor TCP lifecycle tests failed')
     legacy=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
     assert legacy['launcher_checks']==16 and legacy['owned_cleanup']
-    print(json.dumps({'native_checks':summary['native_checks'],'tcp_lifecycle_checks':16,'owned_cleanup':True,'fallback_used':False,'real_ssh':False,'installed_config_used':False,'full_wo_accepted':False}),flush=True)
+    print(json.dumps({'native_checks':summary['native_checks'],'r2_cases':summary['r2_cases'],'tcp_lifecycle_checks':16,'owned_cleanup':True,'fallback_used':False,'real_ssh':False,'installed_config_used':False,'full_wo_accepted':False}),flush=True)
     return 0
 
 if __name__=='__main__':sys.exit(main())

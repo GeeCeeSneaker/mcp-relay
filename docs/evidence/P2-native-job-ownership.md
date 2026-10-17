@@ -52,7 +52,7 @@ source; then compiles/runs the existing 16-check TCP stand-in with the modified
 supervisor. It never calls Config.Load, Program.Main, tray startup, packaging
 build/install, real SSH, installed configuration or credentials.
 
-Native criteria (69 assertions): create/setup failure before any child; false /
+Initial native criteria (69 assertions, before R2): create/setup failure before any child; false /
 uncertain assignment without a success event; terminate false / exception;
 close failure retaining handle; unconfirmed process exit; blocked timer/manual
 replacement both before and after explicit cleanup; real root+descendant stop;
@@ -78,6 +78,47 @@ evidence without waiting for inherited stdout-pipe readers after a timeout. The
 90 s native and 60 s TCP fixture ceilings were not increased. Exact final local
 and CI results, candidate SHA/tree and CI checkout-tree comparison are recorded
 on PR42 / issue38; no initial flaky pass is substituted for the final run.
+
+## R2: delayed exit cannot release ownership early
+
+[Review6230889950](https://github.com/GeeCeeSneaker/mcp-relay/pull/42#issuecomment-6230889950)
+found a source-ordering hole at 4b1d7d5: a non-null exited root could be replaced
+before its OnExited had cleaned the Job and descendants. The previous native
+slice is not accepted merely because its 69 tests passed.
+
+The product correction changes only Launch's predicate: any non-null process or
+non-zero Job identity blocks launch, even if the root is already exited. Checked
+cleanup must clear both identities first; failed cleanup remains latched.
+
+The new actual-source Windows test uses a real root/descendant Job. It delays
+only event-handler entry, then invokes the exact private product OnExited body.
+After native termination of just the root, it proves that the descendant remains
+alive and the exit callback is delayed. Eight public Start calls and eight queued
+private Launch invocations per scenario must return without changing either
+ownership identity or creating another Job. This is controlled event timing in
+the compiled test, not a product scheduler, test hook or fake cleanup routine.
+
+The successful-cleanup scenario verifies the old descendant and Job are gone
+BEFORE the next native Create call. Win32 may reuse numeric handles after close;
+the assertion checks before allocation rather than treating legitimate handle
+reuse as a leak. The second scenario forces Terminate failure in the delayed
+callback, checks retained old Job/descendant and no replacement, then explicit
+exact cleanup and continued latch. There are 23 new assertions / two R2 cases,
+so the full native count is 92; the unchanged TCP fixture remains 16 checks.
+
+The unchanged product source at 4b1d7d5 fails the focused regression: both process
+and Job identities changed, Create count grew from 1 to 2, and the old descendant
+was still alive. The run fails explicitly. Emergency test-only cleanup reclaims
+only recorded exact Job handles and PID/start identities; fallback_used=true
+keeps the old-head run red even when cleanup succeeds. This evidence is preserved.
+The corrected candidate must complete both scenarios with no fallback.
+
+Focused command adds `--r2-only` to the command above; it does not run the full
+fault/TCP suite. The complete workflow runs all 92+16 checks. Adding diagnostic
+JSON windows initially exposed a driver summary-selector error after the native
+assertions passed; the reader now selects the explicit native_checks record.
+The full run is repeated after that harness correction, without changing budgets.
+Exact final candidate/CI/readback is recorded on PR42/#38.
 
 ## Remaining boundaries
 

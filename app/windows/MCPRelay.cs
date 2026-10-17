@@ -267,7 +267,10 @@ namespace MCPRelay
         {
             lock (gate)
             {
-                if (stopped || ownershipError != null || (proc != null && !proc.HasExited)) return;
+                // Root exit is not tree cleanup: a delayed OnExited still owns
+                // both identities. Only checked cleanup may clear them before
+                // another launch; never overwrite an exited root's live Job.
+                if (stopped || ownershipError != null || proc != null || job != IntPtr.Zero) return;
                 ProcessStartInfo psi;
                 try { psi = makeStartInfo(); }
                 catch (Exception e) { Emit("cannot start: " + e.Message); ScheduleRestart(); return; }

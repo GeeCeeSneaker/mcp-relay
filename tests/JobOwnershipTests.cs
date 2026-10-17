@@ -3,6 +3,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace MCPRelay
@@ -22,12 +24,15 @@ namespace MCPRelay
         {
             public volatile string Fault;
             public int Creates, Configures, Assigns, Terminates, Closes;
+            public Func<bool> SafeToCreate;
+            public bool UnsafeCreate;
             public List<Identity> Roots=new List<Identity>();
             public HashSet<IntPtr> Handles=new HashSet<IntPtr>();
             public override int Error { get { return 5; } }
             public override IntPtr Create()
             {
                 Creates++;
+                if(SafeToCreate!=null && !SafeToCreate())UnsafeCreate=true;
                 if(Fault=="create")return IntPtr.Zero;
                 var h=base.Create();if(h!=IntPtr.Zero)Handles.Add(h);return h;
             }
@@ -59,6 +64,7 @@ namespace MCPRelay
         static List<Calls> apis=new List<Calls>();
         static List<Identity> descendants=new List<Identity>();
         static int checks;
+        static int r2Cases;
         static string root, executable;
         static void Check(bool ok,string label)
         { if(!ok)throw new Exception(label);checks++;Console.WriteLine("PASS "+label); }
@@ -160,6 +166,94 @@ namespace MCPRelay
             Check(Wait(()=>File.Exists(retryReady)) && attempts==2 && retry.IsRunning && !retry.OwnershipBlocked,"ordinary_process_start_failure_retains_backoff_retry");
             retry.Stop();Check(Wait(()=>!Alive(retryApi.Roots[0])) && retryApi.Handles.Count==0,"ordinary_retry_exact_cleanup");
         }
+        [DllImport("kernel32.dll", SetLastError=true)]
+        static extern bool TerminateProcess(IntPtr process,uint code);
+        static readonly BindingFlags Private=BindingFlags.Instance|BindingFlags.NonPublic;
+        static void Pressure(Supervised s,string label)
+        {
+            var launch=typeof(Supervised).GetMethod("Launch",Private);
+            Exception failure=null;var errors=new object();
+            using(var returned=new CountdownEvent(8))
+            {
+                for(int i=0;i<8;i++)ThreadPool.QueueUserWorkItem(_=>{
+                    try { launch.Invoke(s,null); }
+                    catch(Exception error) { lock(errors)failure=error; }
+                    finally { returned.Signal(); }
+                });
+                for(int i=0;i<8;i++)s.Start();
+                Check(returned.Wait(2000) && failure==null,label+"_duplicate_start_and_queued_launch_return");
+            }
+        }
+        static void DelayedExit()
+        {
+            foreach(bool failCleanup in new []{false,true})
+            {
+                string label=failCleanup ? "r2_failed_cleanup" : "r2_successful_cleanup";
+                string ready=Path.Combine(root,label+".txt");var api=new Calls();
+                var s=Make(label,api,()=>Info("tree",ready));s.Start();
+                Check(Wait(()=>Ready(ready)!=null) && s.IsRunning,label+"_real_owned_tree_ready");
+                var processField=typeof(Supervised).GetField("proc",Private);
+                var jobField=typeof(Supervised).GetField("job",Private);
+                var process=(Process)processField.GetValue(s);var job=(IntPtr)jobField.GetValue(s);
+                var oldRoot=api.Roots[0];var leaf=Leaf(ready);
+                var onExited=typeof(Supervised).GetMethod("OnExited",Private);
+                var original=(EventHandler)Delegate.CreateDelegate(typeof(EventHandler),s,onExited);
+                using(var entered=new ManualResetEvent(false))
+                using(var release=new ManualResetEvent(false))
+                using(var completed=new ManualResetEvent(false))
+                {
+                    Exception callbackError=null;
+                    // Delay only the event ENTRY, then invoke the exact product
+                    // OnExited body. No product test hook or fake cleanup code.
+                    process.Exited-=original;
+                    process.Exited+=(sender,args)=>{
+                        entered.Set();release.WaitOne();
+                        try { onExited.Invoke(s,new object[]{sender,args}); }
+                        catch(Exception error) { callbackError=error; }
+                        finally { completed.Set(); }
+                    };
+                    api.SafeToCreate=()=>!Alive(leaf) && !api.Handles.Contains(job);
+                    try
+                    {
+                        Check(TerminateProcess(process.Handle,0),label+"_only_root_exited");
+                        Check(entered.WaitOne(2000) && api.WaitForExit(process)==0 && !Alive(oldRoot) && Alive(leaf),label+"_callback_delayed_descendant_survives");
+                        if(failCleanup)api.Fault="terminate";
+                        Pressure(s,label);
+                        bool sameProcess=Object.ReferenceEquals(processField.GetValue(s),process);
+                        bool sameJob=(IntPtr)jobField.GetValue(s)==job;
+                        Console.WriteLine("{\"r2_window\":\""+label+"\",\"same_process\":"+(sameProcess?"true":"false")+",\"same_job\":"+(sameJob?"true":"false")+",\"creates\":"+api.Creates+",\"old_descendant_alive\":"+(Alive(leaf)?"true":"false")+"}");
+                        Check(sameProcess && sameJob,label+"_ownership_identity_not_overwritten");
+                        Check(api.Creates==1 && api.Assigns==1 && !api.UnsafeCreate && api.Handles.Count==1,label+"_no_replacement_or_leaked_job_before_cleanup");
+                        release.Set();
+                        Check(completed.WaitOne(3000) && callbackError==null,label+"_exact_product_exit_callback_completed");
+                        if(failCleanup)
+                        {
+                            Check(s.OwnershipBlocked && Alive(leaf) && (IntPtr)jobField.GetValue(s)==job,label+"_failed_cleanup_retains_old_job");
+                            Latched(s,api,label);
+                            api.Fault=null;s.Stop();
+                            Check(Wait(()=>!Alive(leaf)) && api.Handles.Count==0,label+"_explicit_exact_cleanup");
+                            Latched(s,api,label+"_after_cleanup");
+                        }
+                        else
+                        {
+                            Check(Wait(()=>api.Roots.Count==2 && Ready(ready)!=null && Int32.Parse(Ready(ready)[0])!=oldRoot.Pid),label+"_replacement_after_checked_cleanup");
+                            var next=api.Roots[1];var nextLeaf=Leaf(ready);
+                            // Numeric Win32 handles may be reused AFTER close.
+                            // SafeToCreate checked the old tree/handle BEFORE
+                            // allocation; don't mistake legitimate reuse for a leak.
+                            Check(!Alive(leaf) && !api.UnsafeCreate && api.Closes==1 && api.Handles.Count==1,label+"_old_tree_and_job_gone_before_create");
+                            s.Stop();
+                            Check(Wait(()=>!Alive(next) && !Alive(nextLeaf)) && api.Handles.Count==0,label+"_replacement_tree_cleanup");
+                        }
+                        r2Cases++;
+                    }
+                    finally
+                    {
+                        release.Set();completed.WaitOne(3000);api.Fault=null;s.Stop();
+                    }
+                }
+            }
+        }
         static bool AllGone()
         {
             foreach(var api in apis)foreach(var id in api.Roots)if(Alive(id))return false;
@@ -181,14 +275,20 @@ namespace MCPRelay
         {
             executable=System.Reflection.Assembly.GetExecutingAssembly().Location;
             if(args.Length>0 && args[0].StartsWith("--"))return Child(args);
-            if(args.Length!=1)return 2;
-            root=Path.GetFullPath(args[0]);Directory.CreateDirectory(root);int exit=0;bool fallback=false;
-            try { StartFailures();StopFailures();RealLifecycle(); }
+            bool r2Only=args.Length==2 && args[0]=="r2-only";
+            if(!r2Only && args.Length!=1)return 2;
+            root=Path.GetFullPath(args[r2Only?1:0]);Directory.CreateDirectory(root);int exit=0;bool fallback=false;
+            try { if(!r2Only){StartFailures();StopFailures();RealLifecycle();} DelayedExit(); }
             catch(Exception error) { Console.WriteLine("FAIL "+error.GetType().Name+": "+error.Message);exit=1; }
             finally
             {
                 foreach(var api in apis)api.Fault=null;
                 foreach(var s in supervisors)s.Stop();
+                // A red old-head R2 reproduction may have lost a Job in the
+                // supervisor. Reclaim ONLY handles captured by this test API;
+                // doing so marks the run failed and is never a passing fallback.
+                foreach(var api in apis)foreach(var handle in new List<IntPtr>(api.Handles))
+                { fallback=true;exit=1;IntPtr owned=handle;Jobs.Kill(ref owned,api); }
                 if(!Wait(AllGone))
                 {
                     // Emergency test cleanup is selected ONLY by recorded
@@ -201,7 +301,7 @@ namespace MCPRelay
                 foreach(var api in apis)if(api.Handles.Count!=0)exit=1;
                 if(!AllGone())exit=1;
             }
-            Console.WriteLine("{\"native_checks\":"+checks+",\"owned_cleanup\":"+(AllGone()?"true":"false")+",\"fallback_used\":"+(fallback?"true":"false")+",\"installed_config_used\":false,\"real_win32\":true}");
+            Console.WriteLine("{\"native_checks\":"+checks+",\"r2_cases\":"+r2Cases+",\"owned_cleanup\":"+(AllGone()?"true":"false")+",\"fallback_used\":"+(fallback?"true":"false")+",\"installed_config_used\":false,\"real_win32\":true}");
             return exit;
         }
     }
