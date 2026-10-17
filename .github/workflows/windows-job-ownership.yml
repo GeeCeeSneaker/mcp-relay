@@ -6,6 +6,7 @@ on:
       - 'tests/JobOwnershipTests.cs'
       - 'tests/windows_job_checks.py'
       - 'tests/SecondForwardProposal.cs'
+      - 'tests/TunnelChangesTests.cs'
       - 'tests/second_forward_fixture.mjs'
       - '.github/workflows/windows-job-ownership.yml'
 permissions:

@@ -48,7 +48,13 @@ def main():
     if result.returncode:raise RuntimeError('actual supervisor TCP lifecycle tests failed')
     legacy=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
     assert legacy['launcher_checks']==16 and legacy['owned_cleanup']
-    print(json.dumps({'native_checks':summary['native_checks'],'r2_cases':summary['r2_cases'],'tcp_lifecycle_checks':16,'owned_cleanup':True,'fallback_used':False,'real_ssh':False,'installed_config_used':False,'full_wo_accepted':False}),flush=True)
+    serialized=compile('serialized-tests.exe','TunnelChangesTests','TunnelChangesTests.cs')
+    (root/'serialized').mkdir()
+    result=execute([str(serialized),str(pathlib.Path(args.node_exe).resolve()),str(repo/'tests/second_forward_fixture.mjs'),str(root/'serialized')],'serialized',60)
+    if result.returncode:raise RuntimeError('serialized config / actual supervisor transition tests failed')
+    serialized_summary=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
+    assert serialized_summary['serialized_checks']>=70 and serialized_summary['owned_cleanup'] and not serialized_summary['fallback_used']
+    print(json.dumps({'native_checks':summary['native_checks'],'r2_cases':summary['r2_cases'],'tcp_lifecycle_checks':16,'serialized_checks':serialized_summary['serialized_checks'],'owned_cleanup':True,'fallback_used':False,'real_ssh':False,'installed_config_used':False,'full_wo_accepted':False}),flush=True)
     return 0
 
 if __name__=='__main__':sys.exit(main())
