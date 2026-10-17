@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-10-14 — WO-0010 isolated backend routing diagnostic (#38)
+
+- Pinned existing gateway source plus the two accepted patches; a disposable
+  generic node and one deterministic read-tool backend use configuration only.
+- Real isolated OAuth, namespaced reads and caller-header/token isolation work.
+  Modern MCP schema preflight reads the whole backend catalog; a stopped second
+  backend reproduces a healthy-route timeout under the 20-second client bound.
+- Added reproducible fixtures, hash-locked test dependencies and diagnostic CI.
+  A green diagnostic job means observations completed, not acceptance. Strict
+  mode retains the outage failure. No production code/version/dependency change.
+- [Evidence and proposed next review](evidence/P2-colocated-backend-routing.md).
+  Normal central/SSH routing and mandatory E2E remain unproven; WO is BLOCKED.
+
 ## 2026-10-05 — Node server v2.5.1: `git_status` clean semantics (#33)
 
 - **Owner's interactive ChatGPT end-to-end test of 2.5.0** (disposable repository; results in #29):

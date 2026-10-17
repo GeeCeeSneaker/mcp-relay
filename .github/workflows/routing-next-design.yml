@@ -1,0 +1,41 @@
+name: routing-next-design
+on:
+  pull_request:
+    paths:
+      - 'tests/compatibility_proposal.py'
+      - 'tests/next_design_checks.py'
+      - 'tests/SecondForwardProposal.cs'
+      - 'tests/second_forward_fixture.mjs'
+      - '.github/workflows/routing-next-design.yml'
+permissions:
+  contents: read
+jobs:
+  compatibility-design-only:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Hash-locked isolated dependencies
+        run: |
+          export PIP_CONFIG_FILE="$(python -c 'import os; print(os.devnull)')"
+          python -m pip install --index-url https://pypi.org/simple --require-hashes -r tests/routing-requirements.txt
+      - name: Fixed public source and accepted patches
+        run: python tests/prepare-routing-gateway.py --out "$RUNNER_TEMP/wo10-next-source"
+      - name: New compatibility and disposable lifecycle evidence only
+        # No old green-matrix rerun; no live config/SSH/credential operations.
+        run: python tests/next_design_checks.py --gateway-source "$RUNNER_TEMP/wo10-next-source"

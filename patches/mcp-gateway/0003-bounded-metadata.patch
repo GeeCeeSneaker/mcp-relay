@@ -1,0 +1,248 @@
+diff --git a/src/mcp_gateway/config.py b/src/mcp_gateway/config.py
+--- a/src/mcp_gateway/config.py
++++ b/src/mcp_gateway/config.py
+@@ -11,7 +11,7 @@
+ from typing import Literal
+
+ import yaml
+-from pydantic import BaseModel, Field, field_validator, model_validator
++from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+
+ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+@@ -148,11 +148,26 @@
+ class BackendConfig(BaseModel):
+     """An upstream MCP server exposed through the gateway."""
+
++    model_config = ConfigDict(hide_input_in_errors=True)
++
+     url: str
+     enabled: bool = True
+     auth: BackendAuthConfig = Field(default_factory=BackendAuthConfig)
+     # Extra static headers sent with every request regardless of auth type.
+     headers: dict[str, str] = Field(default_factory=dict)
++    isolate_metadata: StrictBool = False
++    metadata_profile: Literal["bounded-v1"] | None = None
++
++    @model_validator(mode="after")
++    def _isolation_selection(self) -> BackendConfig:
++        if self.isolate_metadata:
++            if self.metadata_profile is None:
++                raise ValueError("isolate_metadata requires metadata_profile=bounded-v1")
++            if self.auth.type != "bearer":
++                raise ValueError("metadata isolation currently requires bearer authentication")
++        elif self.metadata_profile is not None:
++            raise ValueError("metadata_profile requires isolate_metadata=true")
++        return self
+
+
+ class StorageConfig(BaseModel):
+diff --git a/src/mcp_gateway/gateway.py b/src/mcp_gateway/gateway.py
+--- a/src/mcp_gateway/gateway.py
++++ b/src/mcp_gateway/gateway.py
+@@ -118,6 +118,10 @@
+     manager: BackendManager,
+     clients: dict[str, Client],
+ ) -> FastMCP:
++    opted=set()
++    if any(b.enabled and b.isolate_metadata for b in config.backends.values()):
++        from .bounded_metadata import validate_activation
++        opted=validate_activation(config,clients)
+     mcp: FastMCP = FastMCP(
+         name="MCP Gateway",
+         instructions=(
+@@ -164,12 +168,23 @@
+             logger.info("Backend %s is disabled; skipping", name)
+             continue
+         _require_no_header_forwarding(name, clients[name])
+-        proxy = FastMCPProxy(
+-            client_factory=_persistent_client_factory(name, clients[name]),
+-            name=f"proxy-{name}",
+-            mask_error_details=True,
+-        )
++        execution_factory=_persistent_client_factory(name, clients[name])
++        if name in opted:
++            from .bounded_metadata import isolated_mount
++            proxy=isolated_mount(name,clients[name],execution_factory)
++        else:
++            proxy = FastMCPProxy(
++                client_factory=execution_factory,
++                name=f"proxy-{name}",
++                mask_error_details=True,
++            )
++        if name in opted:
++            from .bounded_metadata import CatalogBound
++            proxy.add_middleware(CatalogBound())
+         mcp.mount(proxy, namespace=name)
+         logger.info("Mounted backend %s (%s, auth=%s)", name, backend.url, backend.auth.type)
+
++    if opted:
++        from .bounded_metadata import SchemaScope
++        mcp.add_middleware(SchemaScope(opted))
+     return mcp
+diff --git a/src/mcp_gateway/bounded_metadata.py b/src/mcp_gateway/bounded_metadata.py
+new file mode 100644
+--- /dev/null
++++ b/src/mcp_gateway/bounded_metadata.py
+@@ -0,0 +1,161 @@
++"""Default-off, mounted-gateway metadata isolation (MCPRelay bounded-v1).
++
++The selected backend's discovery is short-lived; execution retains the original
++Client factory and normal FastMCP dispatch. No persistent schema/liveness cache.
++"""
++import asyncio
++from importlib.metadata import version
++
++import httpx2
++from fastmcp import FastMCP
++from fastmcp.exceptions import ToolError
++from fastmcp.server.dependencies import get_access_token, get_http_request
++from fastmcp.server.middleware import Middleware
++from fastmcp.server.providers.base import Provider
++from fastmcp.server.providers.proxy import ProxyTool, ProxyResource, ProxyTemplate, ProxyPrompt
++from mcp.shared.exceptions import MCPError
++from mcp_types import METHOD_NOT_FOUND
++from mcp_types.version import MODERN_PROTOCOL_VERSIONS
++
++METADATA_SECONDS = 3
++CATALOG_SECONDS = .25
++DEPENDENCIES = {'fastmcp':'4.0.5','mcp':'2.3.0','mcp-types':'2.3.0','httpx2':'2.13.0','httpcore2':'2.13.0','pydantic':'2.14.1'}
++STATE_KEY = 'mcprelay_verified_tool_schema'
++
++
++def validate_activation(config, clients):
++    for package, expected in DEPENDENCIES.items():
++        if version(package) != expected:
++            raise RuntimeError('bounded-v1 dependency mismatch: '+package)
++    names=[name for name,b in config.backends.items() if b.enabled]
++    opted={name for name in names if config.backends[name].isolate_metadata}
++    for name in opted:
++        if any(other!=name and (other.startswith(name+'_') or name.startswith(other+'_')) for other in names):
++            raise ValueError('Ambiguous isolated backend namespace: '+name)
++        # Build/validate transport before assembling ANY mounts; no partial activation.
++        metadata_template(clients[name])
++    return opted
++
++
++def metadata_template(client):
++    from .upstream import NoForwardStreamableHttpTransport, _retrying_client_factory
++    source=client.transport
++    if type(source) is not NoForwardStreamableHttpTransport:
++        raise ValueError('bounded-v1 does not support custom transport subclasses')
++    if source.httpx_client_factory not in (None,_retrying_client_factory):
++        raise ValueError('bounded-v1 does not support custom HTTP factories')
++    if source.verify is False or (source.verify is not None and source.httpx_client_factory is not None):
++        raise ValueError('bounded-v1 unsupported TLS/factory configuration')
++    verify=source.verify if source.verify is not None else True
++    def factory(**kwargs):
++        kwargs.pop('timeout',None)
++        return httpx2.AsyncClient(transport=httpx2.AsyncHTTPTransport(verify=verify,retries=0),
++            timeout=httpx2.Timeout(connect=.25,read=2,write=2,pool=2),**kwargs)
++    transport=NoForwardStreamableHttpTransport(source.url,headers=dict(source.headers),auth=source.auth,httpx_client_factory=factory)
++    fresh=client.new()  # Keep the existing Client handlers, extensions and mode.
++    fresh.transport=transport
++    return fresh
++
++
++def require_unversioned(meta):
++    if isinstance(meta,dict) and isinstance(meta.get('fastmcp'),dict) and 'version' in meta['fastmcp']:
++        raise ToolError('bounded-v1 excludes versioned isolated tools')
++
++
++class ComponentProvider(Provider):
++    def __init__(self, metadata_factory, execution_factory):
++        super().__init__();self.metadata_factory=metadata_factory;self.execution_factory=execution_factory
++
++    async def _metadata(self, method):
++        async with asyncio.timeout(METADATA_SECONDS):
++            async with self.metadata_factory() as client:
++                try:return await getattr(client,method)()
++                except MCPError as error:
++                    if error.code!=METHOD_NOT_FOUND:raise
++                    return []
++
++    async def _list_tools(self):
++        items=await self._metadata('list_tools')
++        for item in items:require_unversioned(item.meta)
++        return [ProxyTool.from_mcp_tool(self.execution_factory,item) for item in items]
++
++    async def _list_resources(self):
++        return [ProxyResource.from_mcp_resource(self.execution_factory,item) for item in await self._metadata('list_resources')]
++
++    async def _list_resource_templates(self):
++        return [ProxyTemplate.from_mcp_template(self.execution_factory,item) for item in await self._metadata('list_resource_templates')]
++
++    async def _list_prompts(self):
++        return [ProxyPrompt.from_mcp_prompt(self.execution_factory,item) for item in await self._metadata('list_prompts')]
++
++
++class CatalogBound(Middleware):
++    """Bound aggregate discovery only, never selected lookup or real execution.
++
++    Installed only on opted mounts. A timed-out opted mount can be omitted;
++    non-opted catalogs retain their original supported waits and descriptors.
++    The short proving budget is NOT a production/WAN completeness assertion.
++    """
++    async def bounded(self,context,call_next):
++        try:
++            async with asyncio.timeout(CATALOG_SECONDS):return await call_next(context)
++        except TimeoutError:return []
++    on_list_tools=bounded
++    on_list_resources=bounded
++    on_list_resource_templates=bounded
++    on_list_prompts=bounded
++
++
++class SchemaScope(Middleware):
++    def __init__(self,opted):self.opted=tuple(name+'_' for name in opted)
++    def isolated(self,name):return name.startswith(self.opted)
++
++    async def on_list_tools(self,context,call_next):
++        ctx=context.fastmcp_context
++        if ctx is None or ctx.request_context is None or ctx.request_context.request is None:
++            return await call_next(context)
++        request=get_http_request();body=await request.json()
++        if not isinstance(body,dict) or body.get('method')!='tools/call':return await call_next(context)
++        params=body.get('params')
++        if not isinstance(params,dict) or not isinstance(params.get('name'),str):return await call_next(context)
++        name=params['name'];meta=params.get('_meta')
++        if self.isolated(name):require_unversioned(meta)
++        elif isinstance(meta,dict) and isinstance(meta.get('fastmcp'),dict) and 'version' in meta['fastmcp']:
++            return await call_next(context)  # Stock versioned SDK path is unchanged.
++        if self.isolated(name):setattr(request.state,STATE_KEY,(name,False))
++        if get_access_token() is None:raise ToolError('Authenticated schema context unavailable')
++        try:
++            async with asyncio.timeout(METADATA_SECONDS):tool=await ctx.fastmcp.get_tool(name)
++        except TimeoutError:
++            return [] if self.isolated(name) else await call_next(context)
++        if tool is None:return [] if self.isolated(name) else await call_next(context)
++        if self.isolated(name):setattr(request.state,STATE_KEY,(name,True))
++        return [tool]
++
++    async def on_call_tool(self,context,call_next):
++        name=context.message.name
++        # Non-opted dispatch, including versions/transforms/hashed-name fallback,
++        # remains entirely the original FastMCP path. Only schema discovery is
++        # optimized when a named unversioned stock tool is actually resolved.
++        if not self.isolated(name):return await call_next(context)
++        request=get_http_request();body=await request.json()
++        params=body.get('params',{}) if isinstance(body,dict) else {};meta=params.get('_meta') if isinstance(params,dict) else None
++        if self.isolated(name):require_unversioned(meta)
++        elif isinstance(meta,dict) and isinstance(meta.get('fastmcp'),dict) and 'version' in meta['fastmcp']:
++            return await call_next(context)
++        modern=context.fastmcp_context.request_context.protocol_version in MODERN_PROTOCOL_VERSIONS
++        needs_schema=modern and (bool(context.message.arguments) or any(k.lower().startswith('mcp-param-') for k in request.headers))
++        if needs_schema and getattr(request.state,STATE_KEY,None)!=(name,True):
++            raise ToolError('Backend schema unavailable; call refused')
++        try:
++            async with asyncio.timeout(METADATA_SECONDS):tool=await context.fastmcp_context.fastmcp.get_tool(name)
++        except TimeoutError:raise ToolError('Backend metadata unavailable') from None
++        if tool is None:raise ToolError('Unknown or unavailable tool')
++        return await call_next(context)
++
++
++def isolated_mount(name,client,execution_factory):
++    template=metadata_template(client)
++    mounted=FastMCP(name='proxy-'+name,mask_error_details=True)
++    mounted.add_provider(ComponentProvider(template.new,execution_factory))
++    return mounted

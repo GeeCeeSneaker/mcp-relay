@@ -1,0 +1,45 @@
+name: routing-product-implementation
+on:
+  pull_request:
+    paths:
+      - 'patches/mcp-gateway/0003-bounded-metadata.patch'
+      - 'tests/metadata_activation.py'
+      - 'tests/backend-routing.py'
+      - 'tests/routing-probe.mjs'
+      - 'tests/routing_stock_compatibility.py'
+      - 'tests/prepare-routing-gateway.py'
+      - '.github/workflows/routing-product-implementation.yml'
+permissions:
+  contents: read
+jobs:
+  no-install-mixed-gateway:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Unchanged pinned test dependencies
+        run: |
+          npm ci --prefix node-runtime --no-fund --no-audit
+          export PIP_CONFIG_FILE="$(python -c 'import os; print(os.devnull)')"
+          python -m pip install --index-url https://pypi.org/simple --require-hashes -r tests/routing-requirements.txt
+      - name: Apply actual no-install candidate
+        run: python tests/prepare-routing-gateway.py --out "$RUNNER_TEMP/wo10-product-source" --with-isolation
+      - name: Strict activation and fail-closed guards
+        run: python tests/metadata_activation.py --gateway-source "$RUNNER_TEMP/wo10-product-source"
+      - name: Actual mixed stock G0 and opted G1 (no prototype replacement)
+        run: python tests/backend-routing.py --gateway-source "$RUNNER_TEMP/wo10-product-source" --sample-seconds 1 --production-mixed --strict-matrix

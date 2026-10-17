@@ -20,6 +20,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -69,6 +70,7 @@ namespace MCPRelay
         public string TunnelUser = "mcptunnel";
         public int RemotePort;
         public int LocalPort = 18001;
+        public int SecondLocalPort, SecondRemotePort; // absent / both zero: legacy single forward
         public string SshKey = "";
         public string KnownHosts = "";
         public string PublicUrl = "";
@@ -87,9 +89,22 @@ namespace MCPRelay
             error = null;
             var c = new Config();
             if (!File.Exists(FilePath)) { error = "Missing " + FilePath; return c; }
-            try
-            {
-                var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(FilePath));
+            try { c = Parse(File.ReadAllText(FilePath)); }
+            catch (Exception e) { error = "Invalid config.json: " + e.Message; return c; }
+            if (c.VpsHost == "" || c.RemotePort <= 0) error = "config.json needs vpsHost and remotePort";
+            else if (!File.Exists(c.SshKey)) error = "SSH key not found: " + c.SshKey;
+            else if (!File.Exists(c.KnownHosts)) error = "known_hosts not found: " + c.KnownHosts;
+            else if (!File.Exists(TokenPath)) error = "Bridge token not found: " + TokenPath;
+            return c;
+        }
+
+        // Parsing has no installed-file / credential probes. Shared by startup
+        // and the serialized tunnel-only change path, including isolated tests.
+        internal static Config Parse(string text)
+        {
+                var c = new Config();
+                var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text);
+                if (d == null) throw new ArgumentException("Config must be an object");
                 Func<string, string> s = k => d.ContainsKey(k) && d[k] != null ? Convert.ToString(d[k]) : "";
                 c.NodeName = s("nodeName") != "" ? s("nodeName") : c.NodeName;
                 c.VpsHost = s("vpsHost");
@@ -105,13 +120,19 @@ namespace MCPRelay
                 c.AllowedDirs = Environment.ExpandEnvironmentVariables(s("allowedDirs"));
                 c.ProtectedDirs = Environment.ExpandEnvironmentVariables(s("protectedDirs"));
                 c.ReadOnlyDirs = Environment.ExpandEnvironmentVariables(s("readOnlyDirs"));
-            }
-            catch (Exception e) { error = "Invalid config.json: " + e.Message; return c; }
-            if (c.VpsHost == "" || c.RemotePort <= 0) error = "config.json needs vpsHost and remotePort";
-            else if (!File.Exists(c.SshKey)) error = "SSH key not found: " + c.SshKey;
-            else if (!File.Exists(c.KnownHosts)) error = "known_hosts not found: " + c.KnownHosts;
-            else if (!File.Exists(TokenPath)) error = "Bridge token not found: " + TokenPath;
-            return c;
+                bool local = d.ContainsKey("secondLocalPort"), remote = d.ContainsKey("secondRemotePort");
+                if (local != remote) throw new ArgumentException("Second forward needs both ports");
+                if (local)
+                {
+                    if (!(d["secondLocalPort"] is int) || !(d["secondRemotePort"] is int))
+                        throw new ArgumentException("Second ports must be JSON integers");
+                    c.SecondLocalPort = (int)d["secondLocalPort"]; c.SecondRemotePort = (int)d["secondRemotePort"];
+                    if (c.SecondLocalPort != 0 || c.SecondRemotePort != 0)
+                        if (c.SecondLocalPort < 1 || c.SecondLocalPort > 65535 || c.SecondRemotePort < 1 || c.SecondRemotePort > 65535 ||
+                            c.SecondLocalPort == c.LocalPort || c.SecondRemotePort == c.RemotePort)
+                            throw new ArgumentException("Invalid or overlapping second port pair");
+                }
+                return c;
         }
     }
 
@@ -121,16 +142,18 @@ namespace MCPRelay
     // last handle (app exit or crash) does the same.
     static class Jobs
     {
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern IntPtr CreateJobObject(IntPtr attrs, string name);
-        [DllImport("kernel32.dll")]
+        [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int size);
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-        [DllImport("kernel32.dll")]
+        [DllImport("kernel32.dll", SetLastError = true)]
         static extern bool TerminateJobObject(IntPtr job, uint exitCode);
-        [DllImport("kernel32.dll")]
-        public static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
         [StructLayout(LayoutKind.Sequential)]
         struct JOBOBJECT_BASIC_LIMIT_INFORMATION
@@ -152,24 +175,46 @@ namespace MCPRelay
             public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
         }
 
-        public static IntPtr CreateKillOnClose(Process p)
+        // Instance-local Win32 seam for deterministic failures in the compiled
+        // supervisor tests. Production always uses these native implementations;
+        // no environment switch, global override, or alternate process launcher.
+        internal class Calls
         {
-            IntPtr job = CreateJobObject(IntPtr.Zero, null);
-            var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            // KILL_ON_JOB_CLOSE | BREAKAWAY_OK. Breakaway is only used by the process helper's
-            // spawn (ADR-0008): programs started through it must survive a node server restart.
-            // Everything else (start_process sessions, ssh) stays in the job and dies with it.
-            info.Basic.LimitFlags = 0x2000 | 0x800;
-            SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
-            AssignProcessToJobObject(job, p.Handle);
-            return job;
+            public virtual IntPtr Create() { return CreateJobObject(IntPtr.Zero, null); }
+            public virtual bool Configure(IntPtr job)
+            {
+                var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                // Preserve KILL_ON_JOB_CLOSE | BREAKAWAY_OK (ADR-0008).
+                info.Basic.LimitFlags = 0x2000 | 0x800;
+                return SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
+            }
+            public virtual bool Assign(IntPtr job, Process process) { return AssignProcessToJobObject(job, process.Handle); }
+            public virtual bool Terminate(IntPtr job) { return TerminateJobObject(job, 1); }
+            public virtual bool Close(IntPtr job) { return CloseHandle(job); }
+            public virtual uint WaitForExit(Process process) { return WaitForSingleObject(process.Handle, 2000); }
+            public virtual int Error { get { return Marshal.GetLastWin32Error(); } }
         }
 
-        public static void Kill(IntPtr job)
+        internal static void CreateConfigured(ref IntPtr job, Calls calls)
+        {
+            job = calls.Create();
+            if (job == IntPtr.Zero) throw new Win32Exception(calls.Error, "CreateJobObject failed");
+            if (!calls.Configure(job)) throw new Win32Exception(calls.Error, "SetInformationJobObject failed");
+        }
+
+        internal static void Assign(IntPtr job, Process process, Calls calls)
+        {
+            if (!calls.Assign(job, process)) throw new Win32Exception(calls.Error, "AssignProcessToJobObject failed");
+        }
+
+        internal static void Kill(ref IntPtr job, Calls calls)
         {
             if (job == IntPtr.Zero) return;
-            TerminateJobObject(job, 1);
-            CloseHandle(job);
+            // Keep the exact handle on either failure. Closing after a failed
+            // terminate would discard evidence and let a replacement race it.
+            if (!calls.Terminate(job)) throw new Win32Exception(calls.Error, "TerminateJobObject failed");
+            if (!calls.Close(job)) throw new Win32Exception(calls.Error, "CloseHandle failed");
+            job = IntPtr.Zero;
         }
     }
 
@@ -179,12 +224,15 @@ namespace MCPRelay
         public readonly string Name;
         readonly Func<ProcessStartInfo> makeStartInfo;
         readonly int[] backoffSeconds;
+        readonly Jobs.Calls jobCalls;
         readonly object gate = new object();
         Process proc;
         IntPtr job = IntPtr.Zero;
         System.Threading.Timer restartTimer;
         int attempt;
         bool stopped = true;
+        bool autoRetry = true;
+        string ownershipError;
         public DateTime? RunningSince;
         public int Restarts;
         public string LastExit = "";
@@ -192,17 +240,78 @@ namespace MCPRelay
         public event Action Exited;
 
         public Supervised(string name, Func<ProcessStartInfo> makeStartInfo, int[] backoffSeconds)
+            : this(name, makeStartInfo, backoffSeconds, new Jobs.Calls()) { }
+
+        internal Supervised(string name, Func<ProcessStartInfo> makeStartInfo, int[] backoffSeconds, Jobs.Calls jobCalls)
+            : this(name, makeStartInfo, backoffSeconds, jobCalls, true) { }
+
+        internal Supervised(string name, Func<ProcessStartInfo> makeStartInfo, int[] backoffSeconds, Jobs.Calls jobCalls, bool autoRetry)
         {
             Name = name;
             this.makeStartInfo = makeStartInfo;
             this.backoffSeconds = backoffSeconds;
+            this.jobCalls = jobCalls;
+            this.autoRetry = autoRetry;
         }
 
-        public bool IsRunning { get { lock (gate) { return proc != null && !proc.HasExited; } } }
+        internal string Identity { get { lock (gate) { return IdentityLocked(); } } }
+        string IdentityLocked()
+        {
+            if (ownershipError != null || proc == null || proc.HasExited) return null;
+            return proc.Id + ":" + proc.StartTime.ToUniversalTime().Ticks;
+        }
+        internal bool Released { get { lock (gate) { return ownershipError == null && proc == null && job == IntPtr.Zero; } } }
+        internal bool StopExact(string expected)
+        {
+            lock (gate)
+            {
+                if (expected == null || IdentityLocked() != expected) return false;
+                stopped = true;
+                if (restartTimer != null) { restartTimer.Dispose(); restartTimer = null; }
+                return StopOwned();
+            }
+        }
+        internal bool EnableRetry(string expected)
+        {
+            lock (gate)
+            {
+                if (stopped || expected == null || IdentityLocked() != expected) return false;
+                autoRetry = true; return true;
+            }
+        }
+
+        public bool OwnershipBlocked { get { lock (gate) { return ownershipError != null; } } }
+        // A physically alive but uncertain child must never look successfully
+        // supervised. The error is latched for this instance, even after cleanup.
+        public bool IsRunning { get { lock (gate) { return ownershipError == null && proc != null && !proc.HasExited; } } }
+
+        void BlockOwnership(Exception error)
+        {
+            if (ownershipError == null) ownershipError = error.Message;
+            stopped = true;
+            RunningSince = null;
+            if (restartTimer != null) { restartTimer.Dispose(); restartTimer = null; }
+            Emit("ownership blocked: " + error.Message + "; replacement disabled");
+        }
+
+        bool StopOwned()
+        {
+            try
+            {
+                Jobs.Kill(ref job, jobCalls);
+                // Process.WaitForExit can synchronously invoke Exited, whose
+                // callback also takes gate. Wait on the held native handle to
+                // avoid reversing the Process-event/gate lock order.
+                if (proc != null && jobCalls.WaitForExit(proc) != 0)
+                    throw new InvalidOperationException("Owned process exit unconfirmed");
+                return true;
+            }
+            catch (Exception error) { BlockOwnership(error); return false; }
+        }
 
         public void Start()
         {
-            lock (gate) { stopped = false; }
+            lock (gate) { if (ownershipError != null) return; stopped = false; }
             Launch();
         }
 
@@ -210,7 +319,10 @@ namespace MCPRelay
         {
             lock (gate)
             {
-                if (stopped || (proc != null && !proc.HasExited)) return;
+                // Root exit is not tree cleanup: a delayed OnExited still owns
+                // both identities. Only checked cleanup may clear them before
+                // another launch; never overwrite an exited root's live Job.
+                if (stopped || ownershipError != null || proc != null || job != IntPtr.Zero) return;
                 ProcessStartInfo psi;
                 try { psi = makeStartInfo(); }
                 catch (Exception e) { Emit("cannot start: " + e.Message); ScheduleRestart(); return; }
@@ -220,24 +332,47 @@ namespace MCPRelay
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
                 psi.StandardErrorEncoding = Encoding.UTF8;
+                // Configure containment BEFORE any process can start. A create /
+                // setup failure therefore has no uncontained child to replace.
+                try { Jobs.CreateConfigured(ref job, jobCalls); }
+                catch (Exception error) { BlockOwnership(error); StopOwned(); return; }
                 var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
                 p.OutputDataReceived += (s, e) => { if (e.Data != null) Emit(e.Data); };
                 p.ErrorDataReceived += (s, e) => { if (e.Data != null) Emit(e.Data); };
                 p.Exited += OnExited;
+                try { p.Start(); }
+                catch (Exception error)
+                {
+                    p.Dispose();
+                    Emit("start failed: " + error.Message);
+                    if (StopOwned()) ScheduleRestart();
+                    return;
+                }
+                proc = p;
+                bool assigned = false;
                 try
                 {
-                    p.Start();
-                    job = Jobs.CreateKillOnClose(p);
+                    Jobs.Assign(job, p, jobCalls);
+                    assigned = true;
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
-                    proc = p;
                     RunningSince = DateTime.Now;
                     Emit("started (pid " + p.Id + ")");
                 }
                 catch (Exception e)
                 {
-                    Emit("start failed: " + e.Message);
-                    ScheduleRestart();
+                    BlockOwnership(e);
+                    // Assignment failure is NOT containment. Retain the exact
+                    // Process handle, kill only that root if still unassigned,
+                    // and latch the uncertainty even if root cleanup succeeds.
+                    // Children that raced before assignment cannot be certified.
+                    if (!assigned)
+                    {
+                        Emit("uncontained start (pid " + p.Id + "); no automatic recovery");
+                        try { if (!p.HasExited) p.Kill(); }
+                        catch (Exception cleanup) { BlockOwnership(cleanup); }
+                    }
+                    StopOwned();
                 }
             }
             var h = Exited; if (h != null) h();
@@ -255,16 +390,17 @@ namespace MCPRelay
                 if (longRun) attempt = 0;
                 LastExit = DateTime.Now.ToString("HH:mm:ss") + " (code " + code + ")";
                 Emit("exited with code " + code);
-                Jobs.Kill(job); job = IntPtr.Zero;
-                proc = null;
+                bool cleaned = StopOwned();
+                if (cleaned) { proc = null; p.Dispose(); }
                 RunningSince = null;
-                if (!stopped) { Restarts++; ScheduleRestart(); }
+                if (cleaned && !stopped && ownershipError == null) { Restarts++; ScheduleRestart(); }
             }
             var h = Exited; if (h != null) h();
         }
 
         void ScheduleRestart()
         {
+            if (stopped || ownershipError != null || !autoRetry) return;
             int delay = backoffSeconds[Math.Min(attempt, backoffSeconds.Length - 1)];
             attempt++;
             Emit("restarting in " + delay + "s");
@@ -277,10 +413,11 @@ namespace MCPRelay
         {
             lock (gate)
             {
+                if (ownershipError != null) return;
                 attempt = 0;
-                if (proc == null) { if (!stopped) { if (restartTimer != null) restartTimer.Dispose(); ThreadPool.QueueUserWorkItem(_ => Launch()); } return; }
+                if (proc == null) { if (!stopped && autoRetry) { if (restartTimer != null) restartTimer.Dispose(); ThreadPool.QueueUserWorkItem(_ => Launch()); } return; }
                 Emit("restart requested");
-                Jobs.Kill(job); job = IntPtr.Zero;
+                StopOwned();
             }
         }
 
@@ -290,11 +427,225 @@ namespace MCPRelay
             {
                 stopped = true;
                 if (restartTimer != null) restartTimer.Dispose();
-                Jobs.Kill(job); job = IntPtr.Zero;
+                StopOwned();
             }
         }
 
         void Emit(string text) { var h = Line; if (h != null) h(Name, text); }
+    }
+
+    // A snapshot binds exact file bytes, a serialized SSH plan and every setting
+    // outside the optional pair. No registry, credential lookup or new transport.
+    sealed class TunnelConfigSnapshot
+    {
+        readonly byte[] bytes;
+        public readonly string FileHash, FixedHash, PlanJson, PlanHash;
+        public Config Settings { get { return Config.Parse(Text(bytes)); } }
+        public byte[] Bytes { get { return (byte[])bytes.Clone(); } }
+        static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+        internal static string Hash(byte[] value)
+        { using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(value)).Replace("-", "").ToLowerInvariant(); }
+        internal static string Hash(string value) { return Hash(Encoding.UTF8.GetBytes(value)); }
+        static string Text(byte[] value)
+        { string text = new UTF8Encoding(false, true).GetString(value); return text.TrimStart('\ufeff'); }
+        static string Canonical(object value)
+        {
+            var map = value as Dictionary<string, object>;
+            if (map != null)
+            {
+                var keys = new List<string>(map.Keys); keys.Sort(StringComparer.Ordinal);
+                var items = new List<string>(); foreach (string key in keys) items.Add(Json.Serialize(key) + ":" + Canonical(map[key]));
+                return "{" + String.Join(",", items.ToArray()) + "}";
+            }
+            var array = value as System.Collections.IEnumerable;
+            if (array != null && !(value is string))
+            { var items = new List<string>(); foreach (object item in array) items.Add(Canonical(item)); return "[" + String.Join(",", items.ToArray()) + "]"; }
+            return Json.Serialize(value);
+        }
+        public static TunnelConfigSnapshot Read(string path) { return new TunnelConfigSnapshot(File.ReadAllBytes(path)); }
+        public TunnelConfigSnapshot(byte[] value)
+        {
+            bytes = (byte[])value.Clone(); var c = Settings;
+            if (c.LocalPort < 1 || c.LocalPort > 65535 || c.RemotePort < 1 || c.RemotePort > 65535 || c.VpsHost == "")
+                throw new ArgumentException("Invalid primary tunnel settings");
+            FileHash = Hash(bytes);
+            var fixedSettings = Json.Deserialize<Dictionary<string, object>>(Text(bytes));
+            fixedSettings.Remove("secondLocalPort"); fixedSettings.Remove("secondRemotePort");
+            FixedHash = Hash(Canonical(fixedSettings));
+            PlanJson = "{\"version\":1,\"sshArguments\":" + Json.Serialize(Arguments(c)) + "}";
+            PlanHash = Hash(PlanJson);
+        }
+        static string Q(string value) { return "\"" + value + "\""; }
+        internal static string Arguments(Config c)
+        {
+            return "-N -T -i " + Q(c.SshKey) +
+                " -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" +
+                " -o UserKnownHostsFile=" + Q(c.KnownHosts) +
+                " -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes" +
+                " -o ConnectTimeout=15 -o LogLevel=VERBOSE" +
+                " -R 127.0.0.1:" + c.RemotePort + ":127.0.0.1:" + c.LocalPort +
+                (c.SecondLocalPort == 0 ? "" : " -R 127.0.0.1:" + c.SecondRemotePort + ":127.0.0.1:" + c.SecondLocalPort) +
+                " " + c.TunnelUser + "@" + c.VpsHost;
+        }
+    }
+
+    sealed class TunnelInstance
+    {
+        public readonly Supervised Process;
+        public readonly Func<bool> Ready;
+        public TunnelInstance(Supervised process, Func<bool> ready) { Process = process; Ready = ready; }
+    }
+
+    // Exact, single-use review receipt. Neither reference equality nor a mutable
+    // Config instance authorizes apply. Proposal bytes are re-read under a lock.
+    sealed class TunnelChange
+    {
+        public readonly string ProposalPath, Serialized, Hash, NodeIdentity, TunnelIdentity;
+        public readonly TunnelConfigSnapshot Before, After;
+        public TunnelChange(string path, TunnelConfigSnapshot before, TunnelConfigSnapshot after, string node, string tunnel)
+        {
+            ProposalPath = path; Before = before; After = after; NodeIdentity = node; TunnelIdentity = tunnel;
+            Serialized = new JavaScriptSerializer().Serialize(new { version = 1, beforeConfig = before.FileHash,
+                beforePlan = before.PlanHash, afterConfig = after.FileHash, afterPlan = after.PlanHash,
+                nodeIdentity = node, tunnelIdentity = tunnel });
+            Hash = TunnelConfigSnapshot.Hash(Serialized);
+        }
+    }
+
+    class TunnelFileWrites
+    {
+        public virtual void Write(FileStream file, byte[] bytes)
+        { file.Position = 0; file.Write(bytes, 0, bytes.Length); file.SetLength(bytes.Length); file.Flush(true); }
+    }
+
+    // One synchronous, bounded tunnel replacement. Existing node supervision
+    // remains independent. A new supervisor cannot exist until checked release
+    // of its predecessor, and has no automatic retries until commit succeeds.
+    sealed class TunnelChanges
+    {
+        readonly object gate = new object();
+        readonly string configPath;
+        readonly Supervised node;
+        readonly Func<TunnelConfigSnapshot, bool, TunnelInstance> create;
+        readonly Action<Supervised> select;
+        readonly TunnelFileWrites writes;
+        readonly int timeoutMs;
+        TunnelConfigSnapshot active;
+        TunnelInstance current;
+        public bool Blocked { get; private set; }
+        public string LastFailure { get; private set; }
+        public TunnelConfigSnapshot Active { get { lock (gate) return active; } }
+        public TunnelChanges(string path, TunnelConfigSnapshot snapshot, Supervised node, TunnelInstance tunnel,
+            Func<TunnelConfigSnapshot, bool, TunnelInstance> create, Action<Supervised> select, int timeoutMs, TunnelFileWrites writes)
+        { configPath = Path.GetFullPath(path); active = snapshot; this.node = node; current = tunnel;
+            this.create = create; this.select = select; this.timeoutMs = timeoutMs; this.writes = writes; }
+        // Resume/network callbacks cannot race the transition or revive its old
+        // supervisor. Fail-closed also prevents maintenance after uncertainty.
+        public void Maintain(Action action) { lock (gate) { if (!Blocked) action(); } }
+        public TunnelChange Prepare(string proposalPath, string expectedConfig, string expectedPlan)
+        {
+            if (!Monitor.TryEnter(gate)) throw new InvalidOperationException("Tunnel change already in progress");
+            try
+            {
+                if (Blocked) throw new InvalidOperationException("Tunnel changes blocked; inspect evidence");
+                string path = Path.GetFullPath(proposalPath);
+                if (String.Equals(path, configPath, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Use a separate proposed config file");
+                var before = TunnelConfigSnapshot.Read(configPath); var after = TunnelConfigSnapshot.Read(path);
+                Validate(before, after, expectedConfig, expectedPlan);
+                string n = node.Identity, t = current.Process.Identity;
+                if (n == null || t == null) throw new InvalidOperationException("Running owned node and tunnel required");
+                return new TunnelChange(path, before, after, n, t);
+            }
+            finally { Monitor.Exit(gate); }
+        }
+        void Validate(TunnelConfigSnapshot before, TunnelConfigSnapshot after, string expectedConfig, string expectedPlan)
+        {
+            if (before.FileHash != expectedConfig || active.FileHash != expectedConfig || before.PlanHash != expectedPlan || active.PlanHash != expectedPlan)
+                throw new InvalidOperationException("Stale active config or plan");
+            if (before.FixedHash != after.FixedHash) throw new InvalidOperationException("Only the second port pair may change");
+        }
+        static byte[] Read(FileStream file)
+        { file.Position = 0; using (var buffer = new MemoryStream()) { file.CopyTo(buffer); return buffer.ToArray(); } }
+        bool Wait(Func<bool> predicate)
+        {
+            var watch = Stopwatch.StartNew();
+            do { if (predicate()) return true; Thread.Sleep(20); } while (watch.ElapsedMilliseconds < timeoutMs);
+            return false;
+        }
+        bool Retire(TunnelInstance instance, string expected)
+        {
+            if (expected != null) { if (!instance.Process.StopExact(expected)) return false; }
+            else instance.Process.Stop(); // Only an uncommitted instance owned by this transaction.
+            return Wait(() => instance.Process.Released);
+        }
+        string Ready(TunnelInstance instance, string nodeIdentity)
+        {
+            string identity = instance.Process.Identity;
+            if (identity == null || !Wait(() => node.Identity != nodeIdentity || !instance.Process.IsRunning || instance.Ready())) return null;
+            return node.Identity == nodeIdentity && instance.Process.Identity == identity && instance.Ready() ? identity : null;
+        }
+        TunnelInstance Launch(TunnelConfigSnapshot snapshot)
+        {
+            var instance = create(snapshot, false); current = instance; select(instance.Process); instance.Process.Start(); return instance;
+        }
+        public string Apply(TunnelChange change, string expectedHash)
+        {
+            if (!Monitor.TryEnter(gate)) throw new InvalidOperationException("Tunnel change already in progress");
+            try
+            {
+                if (Blocked || change.Hash != expectedHash || TunnelConfigSnapshot.Hash(change.Serialized) != expectedHash)
+                    throw new InvalidOperationException("Blocked or mismatched change receipt");
+                using (var file = new FileStream(configPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                using (var proposed = new FileStream(change.ProposalPath, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    var before = new TunnelConfigSnapshot(Read(file)); var after = new TunnelConfigSnapshot(Read(proposed));
+                    Validate(before, after, change.Before.FileHash, change.Before.PlanHash);
+                    if (after.FileHash != change.After.FileHash || after.PlanHash != change.After.PlanHash ||
+                        node.Identity != change.NodeIdentity || current.Process.Identity != change.TunnelIdentity)
+                        throw new InvalidOperationException("Stale proposal or process identity");
+                    LastFailure = null;
+                    if (!Retire(current, change.TunnelIdentity)) { Blocked = true; LastFailure = "Old tunnel release unconfirmed"; return "blocked: old tunnel release unconfirmed"; }
+                    TunnelInstance replacement = null;
+                    try
+                    {
+                        if (node.Identity != change.NodeIdentity) throw new InvalidOperationException("Node identity changed");
+                        replacement = Launch(after);
+                        string identity = Ready(replacement, change.NodeIdentity);
+                        if (identity == null) throw new InvalidOperationException("Replacement readiness unconfirmed");
+                        writes.Write(file, after.Bytes);
+                        if (TunnelConfigSnapshot.Hash(Read(file)) != after.FileHash) throw new IOException("Config write readback mismatch");
+                        if (node.Identity != change.NodeIdentity || !replacement.Process.EnableRetry(identity))
+                            throw new InvalidOperationException("Identity changed before commit");
+                        active = after; return "applied";
+                    }
+                    catch (Exception failure)
+                    {
+                        LastFailure = failure.GetType().Name + ": " + failure.Message;
+                        // Stop even a failed/unready candidate before touching rollback.
+                        // A native ownership latch never permits another replacement.
+                        if (replacement == null) replacement = current;
+                        if (!Retire(replacement, null)) { Blocked = true; return "blocked: candidate release unconfirmed"; }
+                        try
+                        {
+                            if (TunnelConfigSnapshot.Hash(Read(file)) != before.FileHash) writes.Write(file, before.Bytes);
+                            if (TunnelConfigSnapshot.Hash(Read(file)) != before.FileHash || node.Identity != change.NodeIdentity)
+                                throw new IOException("Rollback config or node identity unconfirmed");
+                            var rollback = Launch(before);
+                            string identity = Ready(rollback, change.NodeIdentity);
+                            if (identity == null || !rollback.Process.EnableRetry(identity)) throw new IOException("Rollback readiness unconfirmed");
+                            return "rolled-back";
+                        }
+                        catch (Exception rollbackFailure)
+                        {
+                            LastFailure += "; rollback " + rollbackFailure.GetType().Name + ": " + rollbackFailure.Message;
+                            current.Process.Stop(); Wait(() => current.Process.Released);
+                            Blocked = true; return "blocked: rollback unconfirmed; no retries";
+                        }
+                    }
+                }
+            }
+            finally { Monitor.Exit(gate); }
+        }
     }
 
     // ------------------------------------------------------------- main form
@@ -315,6 +666,7 @@ namespace MCPRelay
         Config config;
         string configError;
         Supervised bridge, tunnel;
+        TunnelChanges tunnelChanges;
         volatile bool dcUp, publicUp;
         volatile bool publicChecked;
         DateTime? tunnelAuthAt;
@@ -360,11 +712,11 @@ namespace MCPRelay
 
             SystemEvents.PowerModeChanged += (s, e) =>
             {
-                if (e.Mode == PowerModes.Resume && tunnel != null) { Log("app", "resumed from sleep; reconnecting tunnel"); tunnel.Restart(); }
+                if (e.Mode == PowerModes.Resume && tunnelChanges != null) tunnelChanges.Maintain(() => { Log("app", "resumed from sleep; reconnecting tunnel"); tunnel.Restart(); });
             };
             NetworkChange.NetworkAvailabilityChanged += (s, e) =>
             {
-                if (e.IsAvailable && tunnel != null && !TunnelConnected) { Log("app", "network available; reconnecting tunnel"); tunnel.Restart(); }
+                if (e.IsAvailable && tunnelChanges != null) tunnelChanges.Maintain(() => { if (!TunnelConnected) { Log("app", "network available; reconnecting tunnel"); tunnel.Restart(); } });
             };
 
             if (configError != null) Log("app", "NOT CONFIGURED: " + configError);
@@ -418,6 +770,7 @@ namespace MCPRelay
             var menu = new ContextMenuStrip();
             menu.Items.Add("Open MCPRelay", null, (s, e) => ShowWindow());
             menu.Items.Add("Restart services", null, (s, e) => RestartServices());
+            menu.Items.Add("Apply tunnel-only config...", null, (s, e) => ApplyTunnelConfig());
             menu.Items.Add(new ToolStripSeparator());
             autostartItem.Checked = Autostart;
             autostartItem.Click += (s, e) => SetAutostart(!Autostart);
@@ -440,6 +793,9 @@ namespace MCPRelay
 
         void StartServices()
         {
+            TunnelConfigSnapshot snapshot;
+            try { snapshot = TunnelConfigSnapshot.Read(Config.FilePath); config = snapshot.Settings; }
+            catch (Exception error) { configError = error.Message; Log("app", "NOT CONFIGURED: " + configError); return; }
             string nodeExe = config.NodeExe != "" ? config.NodeExe : Path.Combine(AppDir, @"runtime\node\node.exe");
             if (!File.Exists(nodeExe)) nodeExe = "node.exe";
             string bridgeScript = config.BridgeScript != "" ? config.BridgeScript : Path.Combine(AppDir, @"runtime\app\server.mjs");
@@ -459,23 +815,50 @@ namespace MCPRelay
                 return psi;
             }, new[] { 1, 2, 5, 10, 30 });
 
-            tunnel = new Supervised("tunnel", () =>
+            Func<TunnelConfigSnapshot, bool, TunnelInstance> makeTunnel = (plan, retry) =>
             {
-                string args = "-N -T -i " + Quote(config.SshKey) +
-                    " -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" +
-                    " -o UserKnownHostsFile=" + Quote(config.KnownHosts) +
-                    " -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes" +
-                    " -o ConnectTimeout=15 -o LogLevel=VERBOSE" +
-                    " -R 127.0.0.1:" + config.RemotePort + ":127.0.0.1:" + config.LocalPort +
-                    " " + config.TunnelUser + "@" + config.VpsHost;
-                return new ProcessStartInfo(ssh, args);
-            }, new[] { 1, 2, 5, 10, 15 });
+                var c = plan.Settings;
+                var process = new Supervised("tunnel", () => new ProcessStartInfo(ssh, TunnelConfigSnapshot.Arguments(c)),
+                    new[] { 1, 2, 5, 10, 15 }, new Jobs.Calls(), retry);
+                DateTime? authenticated = null; var authGate = new object();
+                process.Line += Log;
+                process.Line += (src, text) => { if (text.Contains("Authenticated to")) lock (authGate) {
+                    authenticated = DateTime.Now; if (tunnel == process) tunnelAuthAt = authenticated;
+                } };
+                process.Exited += () => { if (!process.IsRunning) lock (authGate) {
+                    authenticated = null; if (tunnel == process) tunnelAuthAt = null;
+                } };
+                return new TunnelInstance(process, () => { lock (authGate) return authenticated.HasValue && (DateTime.Now - authenticated.Value).TotalSeconds >= 2; });
+            };
 
-            bridge.Line += Log; tunnel.Line += Log;
-            tunnel.Line += (src, text) => { if (text.Contains("Authenticated to")) tunnelAuthAt = DateTime.Now; };
-            tunnel.Exited += () => { if (!tunnel.IsRunning) tunnelAuthAt = null; };
+            var initial = makeTunnel(snapshot, true); tunnel = initial.Process;
+            tunnelChanges = new TunnelChanges(Config.FilePath, snapshot, bridge, initial, makeTunnel,
+                selected => { tunnelAuthAt = null; tunnel = selected; }, 20000, new TunnelFileWrites());
+            bridge.Line += Log;
             bridge.Start();
             tunnel.Start();
+        }
+
+        void ApplyTunnelConfig()
+        {
+            if (tunnelChanges == null) { Log("app", "Tunnel-only apply requires configured running services"); return; }
+            using (var picker = new OpenFileDialog { Title = "Select proposed config (only secondLocalPort / secondRemotePort may differ)", Filter = "JSON config|*.json" })
+            {
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    var active = tunnelChanges.Active;
+                    var change = tunnelChanges.Prepare(picker.FileName, active.FileHash, active.PlanHash);
+                    if (MessageBox.Show(this, "Replace the SSH tunnel only? Existing primary TCP sessions will disconnect. The local server stays running.\n\nChange: " + change.Hash +
+                        "\nPlan: " + change.Before.PlanHash + " -> " + change.After.PlanHash,
+                        "Apply tunnel-only config", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+                    string result = tunnelChanges.Apply(change, change.Hash);
+                    config = tunnelChanges.Active.Settings;
+                    Log("app", "tunnel-only change " + change.Hash + ": " + result);
+                    if (tunnelChanges.LastFailure != null) Log("app", "tunnel-only failure: " + tunnelChanges.LastFailure);
+                }
+                catch (Exception error) { Log("app", "tunnel-only apply refused: " + error.Message); }
+            }
         }
 
         void RestartServices()
@@ -488,8 +871,7 @@ namespace MCPRelay
                 return;
             }
             Log("app", "restarting services");
-            bridge.Restart();
-            tunnel.Restart();
+            tunnelChanges.Maintain(() => { bridge.Restart(); tunnel.Restart(); });
         }
 
         bool TunnelConnected
@@ -513,7 +895,7 @@ namespace MCPRelay
                     {
                         healthFailures = 0;
                         Log("app", "server not answering health checks; restarting it");
-                        bridge.Restart();
+                        tunnelChanges.Maintain(() => bridge.Restart());
                     }
                 });
                 if (config.PublicUrl != "" && (healthTicks % 12 == 1))
@@ -544,11 +926,12 @@ namespace MCPRelay
                 return;
             }
             bool bridgeRunning = bridge != null && bridge.IsRunning;
-            bridgeLabel.Text = "Local server: " + (bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
+            bridgeLabel.Text = "Local server: " + (bridge != null && bridge.OwnershipBlocked ? "ownership blocked; inspect log" : bridgeRunning ? (dcUp ? "running" : "starting") + Since(bridge.RunningSince) : "stopped") + RestartInfo(bridge);
             bool connected = TunnelConnected;
-            tunnelLabel.Text = "Tunnel to VPS: " + (connected ? "connected" + Since(tunnelAuthAt) : tunnel != null && tunnel.IsRunning ? "connecting" : "disconnected") + RestartInfo(tunnel);
+            tunnelLabel.Text = "Tunnel to VPS: " + (tunnelChanges != null && tunnelChanges.Blocked ? "change blocked; inspect log" : tunnel != null && tunnel.OwnershipBlocked ? "ownership blocked; inspect log" : connected ? "connected" + Since(tunnelAuthAt) : tunnel != null && tunnel.IsRunning ? "connecting" : "disconnected") + RestartInfo(tunnel);
             publicLabel.Text = config.PublicUrl == "" ? "" : "Public endpoint: " + (!publicChecked ? "checking" : publicUp ? "reachable" : "unreachable") + "  (" + config.PublicUrl + ")";
-            if (bridgeRunning && dcUp && connected) SetTray(iconOk, "MCPRelay - connected");
+            if ((tunnelChanges != null && tunnelChanges.Blocked) || (bridge != null && bridge.OwnershipBlocked) || (tunnel != null && tunnel.OwnershipBlocked)) SetTray(iconBad, "MCPRelay - ownership/change blocked");
+            else if (bridgeRunning && dcUp && connected) SetTray(iconOk, "MCPRelay - connected");
             else if (bridgeRunning || (tunnel != null && tunnel.IsRunning)) SetTray(iconWarn, "MCPRelay - " + (!dcUp ? "starting bridge" : "connecting tunnel"));
             else SetTray(iconBad, "MCPRelay - stopped");
         }
