@@ -1,7 +1,7 @@
 """Fetch only whitelisted fixed public package bytes; no Git authentication."""
 import argparse, hashlib, io, json, pathlib, subprocess, urllib.request, zipfile
 
-ap=argparse.ArgumentParser();ap.add_argument('--out',required=True);args=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--out',required=True);ap.add_argument('--with-isolation',action='store_true');args=ap.parse_args()
 repo=pathlib.Path(__file__).resolve().parents[1]
 manifest=json.loads((repo/'tests/routing-gateway-source.json').read_text())
 out=pathlib.Path(args.out).resolve()
@@ -23,4 +23,8 @@ patches=[str(repo/'patches/mcp-gateway'/p) for p in ['0001-persistent-backend-cl
 for mode in ['--check',None]:
     cmd=['git','-c','core.autocrlf=false','-C',str(out),'apply']+([mode] if mode else [])+patches
     subprocess.run(cmd,check=True,capture_output=True)
-print('PASS fixed gateway source and accepted patches verified')
+if args.with_isolation:
+    patch=str(repo/'patches/mcp-gateway/0003-bounded-metadata.patch')
+    for mode in ['--check',None]:
+        subprocess.run(['git','-c','core.autocrlf=false','-C',str(out),'apply']+([mode] if mode else [])+[patch],check=True,capture_output=True)
+print('PASS fixed gateway source and '+('candidate isolation patch' if args.with_isolation else 'accepted patches')+' verified')

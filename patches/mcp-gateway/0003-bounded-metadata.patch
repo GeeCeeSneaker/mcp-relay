@@ -1,0 +1,44 @@
+diff --git a/src/mcp_gateway/config.py b/src/mcp_gateway/config.py
+--- a/src/mcp_gateway/config.py
++++ b/src/mcp_gateway/config.py
+@@ -11,7 +11,7 @@
+ from typing import Literal
+
+ import yaml
+-from pydantic import BaseModel, Field, field_validator, model_validator
++from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
+
+ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+@@ -153,6 +153,19 @@
+     auth: BackendAuthConfig = Field(default_factory=BackendAuthConfig)
+     # Extra static headers sent with every request regardless of auth type.
+     headers: dict[str, str] = Field(default_factory=dict)
++    isolate_metadata: StrictBool = False
++    metadata_profile: Literal["bounded-v1"] | None = None
++
++    @model_validator(mode="after")
++    def _isolation_selection(self) -> BackendConfig:
++        if self.isolate_metadata:
++            if self.metadata_profile is None:
++                raise ValueError("isolate_metadata requires metadata_profile=bounded-v1")
++            if self.auth.type != "bearer":
++                raise ValueError("metadata isolation currently requires bearer authentication")
++        elif self.metadata_profile is not None:
++            raise ValueError("metadata_profile requires isolate_metadata=true")
++        return self
+
+
+ class StorageConfig(BaseModel):
+diff --git a/src/mcp_gateway/gateway.py b/src/mcp_gateway/gateway.py
+--- a/src/mcp_gateway/gateway.py
++++ b/src/mcp_gateway/gateway.py
+@@ -118,6 +118,8 @@
+     manager: BackendManager,
+     clients: dict[str, Client],
+ ) -> FastMCP:
++    if any(b.enabled and b.isolate_metadata for b in config.backends.values()):
++        raise RuntimeError("Metadata isolation integration is not available in this checkpoint")
+     mcp: FastMCP = FastMCP(
+         name="MCP Gateway",
+         instructions=(
