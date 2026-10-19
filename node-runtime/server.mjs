@@ -1013,6 +1013,7 @@ const GITOPS = gitCapabilities({ allowedPath, fail, factsResult, CapError, norm,
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
 const CONTROLLER = controllerCapabilities({
+  nodeId: NODE_NAME,
   port: E.MCPRELAY_CONTROLLER_RPC_PORT,
   protocol: E.MCPRELAY_CONTROLLER_RPC_PROTOCOL,
   timeoutMs: E.MCPRELAY_CONTROLLER_RPC_TIMEOUT_MS === undefined ? 10_000 : Number(E.MCPRELAY_CONTROLLER_RPC_TIMEOUT_MS),
