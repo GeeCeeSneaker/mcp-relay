@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, ProtocolError, createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { GIT_ERRORS, gitCapabilities } from './git.mjs';
+import { CONTROLLER_ERRORS, controllerCapabilities } from './controller.mjs';
 
 const VERSION = '2.5.1';
 const { values: opt } = parseArgs({
@@ -155,8 +156,9 @@ const ERRORS = {
   timeout: 'retry_later', busy: 'retry_later',
   internal_error: 'stop', helper_missing: 'stop',
   ...GIT_ERRORS, // local Git operations (git.mjs)
+  ...CONTROLLER_ERRORS,
 };
-const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error' };
+const NEXT = { refresh_catalog: 'capabilities may have changed: call list_capabilities again, then retry with the current names, classes and arguments', fix_args: 'fix the arguments and retry', ask_user: 'stop and ask the user', retry_later: 'retry later', stop: 'stop; report the error', reconcile: 'do not redispatch apply_decision; query controller.get_result with the same exact reference' };
 // facts: optional structured record of what was found or done before the failure
 // (process lifecycle), returned with the error and in _meta["io.mcprelay/result"].
 class CapError extends Error { constructor(code, message, facts) { super(message); this.code = code; this.facts = facts; } }
@@ -1010,6 +1012,12 @@ const GITOPS = gitCapabilities({ allowedPath, fail, factsResult, CapError, norm,
 
 // ------------------------------------------------------------------- tools --
 const P = (props, required = []) => ({ type: 'object', properties: props, required });
+const CONTROLLER = controllerCapabilities({
+  port: E.MCPRELAY_CONTROLLER_RPC_PORT,
+  protocol: E.MCPRELAY_CONTROLLER_RPC_PROTOCOL,
+  timeoutMs: E.MCPRELAY_CONTROLLER_RPC_TIMEOUT_MS === undefined ? 10_000 : Number(E.MCPRELAY_CONTROLLER_RPC_TIMEOUT_MS),
+  fail, factsResult,
+});
 const str = { type: 'string' }; const num = { type: 'number' };
 const TOOLS = {
   node_status: { d: 'Status of this MCPRelay node runtime: version, PID, uptime, host, OS, allowed file roots and process-session counts. Contains no credentials.', s: P({}),
@@ -1108,6 +1116,7 @@ const TOOLS = {
   target_restart: { d: 'Restart a declared target in one call: verify the running instance (expect_ref: must be that exact instance), stop it per the declared policy, start it as declared, verify the new identity and health checks. Returns status (restarted / started), old and new identity, stop_method, health_check. Partial outcomes are reported, never rolled back: stop_failed, stopped_not_started, exited_after_start, started_identity_mismatch, started_unhealthy. start_if_stopped (default true).',
     s: P({ target: str, expect_ref: str, start_if_stopped: { type: 'boolean' } }, ['target']), run: targetRestart },
   ...GITOPS.tools,
+  ...CONTROLLER.tools,
 };
 // ---------------------------------------------------------- risk classes --
 // Clients (ChatGPT) cache a connector's tool list, so the exposed tools are a
@@ -1155,6 +1164,7 @@ const META = {
   interact_with_process: ['Send input to process',  'exec'],
   spawn_process:         ['Start program',          'exec'],
   ...GITOPS.meta,
+  ...CONTROLLER.meta,
 };
 const invokeTool = (cls) => `invoke_${cls}`;
 const namesOf = (cls) => Object.keys(TOOLS).filter((n) => META[n][1] === cls);
