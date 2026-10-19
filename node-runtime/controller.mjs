@@ -3,7 +3,7 @@ import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 export const CONTROLLER_PROTOCOL = 'adcp-reference-rpc/1';
-export const CONTROLLER_ERRORS = { controller_outcome_unknown: 'reconcile' };
+export const CONTROLLER_ERRORS = { controller_outcome_unknown: 'reconcile', controller_snapshot_unavailable: 'retry_later' };
 const MAX_FRAME = 16 * 1024;
 const MAX_IN_FLIGHT = 16;
 const SHA = /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
@@ -55,9 +55,46 @@ function validResult(x, ref) {
     && validReceipt(x.receipt, ref);
 }
 
+const fields = (x, definition) => keys(x, Object.keys(definition)) && Object.entries(definition).every(([k, check]) => check(x[k]));
+const nonnegative = (x) => Number.isSafeInteger(x) && x >= 0;
+const atom = (x) => string(x) && /^[A-Za-z0-9_.:@+-]+$/.test(x);
+const oneOf = (...values) => (x) => values.includes(x);
+function validSnapshot(x) {
+  const maybe = (check) => (v) => nullable(v, check);
+  return fields(x, {
+    schema_version: oneOf('adcp.controller-snapshot.v1'), protocol_version: oneOf(CONTROLLER_PROTOCOL),
+    controller_version: atom, repository: (v) => string(v, 256) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(v),
+    observed_at: date, node_id: maybe(atom),
+    health: (v) => fields(v, {
+      status: oneOf('healthy', 'stale', 'stopped', 'missing', 'invalid'), heartbeat_at: maybe(date),
+      age_seconds: maybe((n) => typeof n === 'number' && Number.isFinite(n)),
+      controller_identity: maybe(atom), runtime_identity: maybe(atom), process_id: maybe(positive),
+      process_start_time: maybe(date), successful_cycle_count: maybe(nonnegative), last_successful_cycle_at: maybe(date),
+    }),
+    store: (v) => fields(v, { status: oneOf('readable', 'unavailable'), trust: oneOf('validated_on_open', 'unknown') }),
+    provider: (v) => fields(v, { name: maybe(atom), default_model: maybe(atom), default_reasoning_effort: maybe(atom), availability: oneOf('unknown') }),
+    capacity: (v) => fields(v, { limit: (n) => positive(n) && n <= 64, occupied: maybe(nonnegative), available: maybe(nonnegative) }),
+    admission: oneOf('not_evaluated'),
+    bindings: (v) => Array.isArray(v) && v.length <= 8 && v.every((b) => fields(b, {
+      binding_id: maybe(atom), task_id: maybe(atom), provider: maybe(atom), session_id: maybe(atom),
+      created_at: maybe(date), workspace_owner_binding_id: maybe(atom),
+    })),
+    runs: (v) => Array.isArray(v) && v.length <= 8 && v.every((r) => fields(r, {
+      run_id: maybe(atom), binding_id: maybe(atom), task_id: maybe(atom), runtime_issue_number: maybe(positive),
+      categories: (a) => Array.isArray(a) && a.length <= 4 && a.every(oneOf('unresolved_launch', 'pending_terminal', 'pending_delivery', 'pending_stop')),
+      provider: maybe(atom), session_id: maybe(atom), provider_execution_id: maybe(atom), provider_state: oneOf('ended', 'unresolved'),
+      model: maybe(atom), reasoning_effort: maybe(atom), process_id: maybe(positive), process_start_time: maybe(date),
+      workspace_owner_binding_id: maybe(atom), result_owner_run_id: maybe(atom), delivery_stage: maybe(code),
+    })),
+    truncated: (v) => typeof v === 'boolean', agent_telemetry: oneOf(null), resource_summary: oneOf(null),
+    last_material_error: maybe((v) => fields(v, { stage: code, reason: code })),
+    partial: (v) => Array.isArray(v) && v.length <= 16 && v.every(code),
+  });
+}
+
 // A single connection, frame and absolute deadline per request. No reconnect,
 // redispatch or cancellation claim; the Controller owns any dispatched work.
-function exchange(port, deadlineMs, method, ref) {
+function exchange(port, deadlineMs, method, ref, validate = validResult) {
   const id = `${method}:${randomUUID()}`; // binds response to this request AND method
   const wire = Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id, method, params: ref })}\n`);
   return new Promise((resolve, reject) => {
@@ -85,14 +122,14 @@ function exchange(port, deadlineMs, method, ref) {
         if (lf !== bytes.length - 1) throw new Error('multiple frames');
         const response = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, lf)));
         if (!keys(response, ['jsonrpc', 'id', 'result']) || response.jsonrpc !== '2.0'
-            || response.id !== id || !validResult(response.result, ref)) throw new Error('incompatible response');
+            || response.id !== id || !validate(response.result, ref)) throw new Error('incompatible response');
         finish(null, response.result);
       } catch { unknown(); }
     });
   });
 }
 
-export function controllerCapabilities({ port, protocol = CONTROLLER_PROTOCOL, timeoutMs = 10_000, fail, factsResult }) {
+export function controllerCapabilities({ port, protocol = CONTROLLER_PROTOCOL, timeoutMs = 10_000, nodeId, fail, factsResult }) {
   // Opt-in is local configuration, never an argument to an MCP call.
   if (port === undefined || port === '') return { tools: {}, meta: {} };
   if (!/^[0-9]+$/.test(String(port)) || !positive(Number(port)) || Number(port) > 65535
@@ -118,10 +155,32 @@ export function controllerCapabilities({ port, protocol = CONTROLLER_PROTOCOL, t
     tools: {
       'controller.apply_decision': tool('controller.apply_decision', 'Apply one durable GitHub directive. Can START/RESUME an Agent or STOP an exact run; acknowledgment is not completion.'),
       'controller.get_result': tool('controller.get_result', 'Read the bounded current receipt/result for one exact GitHub reference, without applying it.'),
+      'controller.snapshot': {
+        d: `Read bounded existing Controller health/Store/ownership facts. Protocol ${CONTROLLER_PROTOCOL}; partial/unknown is explicit; not an admission decision. No Provider or host probe.`,
+        s: { type: 'object', additionalProperties: false, properties: {} },
+        run: async (args) => {
+          if (!keys(args, [])) fail('invalid_args', 'controller.snapshot expects an empty object.');
+          if (inFlight >= MAX_IN_FLIGHT) fail('busy', 'Controller bridge busy; this read was not dispatched.');
+          inFlight++;
+          try {
+            const snapshot = await exchange(Number(port), timeoutMs, 'controller.snapshot', {}, validSnapshot);
+            // Node identity is bound by this runtime, never by caller arguments.
+            if (snapshot.node_id === null && atom(nodeId)) {
+              snapshot.node_id = nodeId;
+              snapshot.partial = snapshot.partial.filter((v) => v !== 'NODE_IDENTITY_UNBOUND');
+            }
+            return factsResult(snapshot);
+          } catch {
+            fail('controller_snapshot_unavailable', 'Controller snapshot unavailable or incompatible; node liveness does not imply Controller readiness.',
+              { state: 'UNKNOWN', protocol: CONTROLLER_PROTOCOL });
+          } finally { inFlight--; }
+        },
+      },
     },
     meta: {
       'controller.apply_decision': ['Controller apply START/RESUME/STOP decision', 'exec'],
       'controller.get_result': ['Controller receipt/result', 'read'],
+      'controller.snapshot': ['Controller current health/Store/ownership snapshot', 'read'],
     },
   };
 }

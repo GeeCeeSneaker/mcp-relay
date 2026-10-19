@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import json
 import os
+import random
 from pathlib import Path
 import shutil
 import socket
@@ -21,12 +22,18 @@ sys.dont_write_bytecode = True
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--controller-source', type=Path, required=True)
 ap.add_argument('--node-exe', default=shutil.which('node'))
+ap.add_argument('--allow-working-tree', action='store_true', help='Explicit local engineering test of the unsealed candidate')
+ap.add_argument('--snapshot-only', action='store_true', help='Run only the focused snapshot scenarios')
+ap.add_argument('--controller-head', default='7539d0fbce292f6e8b97d34bd3038fe603082abc', help='Exact Controller candidate HEAD')
 args = ap.parse_args()
 REPO = Path(__file__).resolve().parents[1]
 SOURCE = args.controller_source.resolve(strict=True)
-CONTROLLER_COMMIT = '7539d0fbce292f6e8b97d34bd3038fe603082abc'
+CONTROLLER_BASE = '7539d0fbce292f6e8b97d34bd3038fe603082abc'
+CONTROLLER_COMMIT = args.controller_head
 assert subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD']).decode().strip() == CONTROLLER_COMMIT
-assert subprocess.check_output(['git', '-C', str(SOURCE), 'status', '--porcelain=v1']) == b''
+subprocess.run(['git', '-C', str(SOURCE), 'merge-base', '--is-ancestor', CONTROLLER_BASE, CONTROLLER_COMMIT], check=True)
+if not args.allow_working_tree:
+    assert subprocess.check_output(['git', '-C', str(SOURCE), 'status', '--porcelain=v1']) == b''
 sys.path[:0] = [str(SOURCE), str(SOURCE / 'tests')]
 fixtures = importlib.import_module('test_reference_control')
 assert Path(importlib.import_module('controller').__file__).resolve().is_relative_to(SOURCE)
@@ -46,9 +53,16 @@ def environment(root):
 
 
 def free_port():
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+    # Fetch rejects reserved low ports even on loopback. Use a bounded fixture
+    # allocation in the unprivileged high range, with no forwarding/service use.
+    for _ in range(100):
+        with socket.socket() as s:
+            try:
+                s.bind(('127.0.0.1', random.randrange(20000, 60000)))
+                return s.getsockname()[1]
+            except OSError:
+                pass
+    raise AssertionError('No free high fixture port in allocation budget')
 
 
 async def terminate(proc):
@@ -154,9 +168,10 @@ async def execution_result(pair, label):
             catalog = await relay.call({'name': 'list_capabilities', 'arguments': {}})
             caps = json.loads(catalog['result']['content'][0]['text'])['capabilities']
             bridge = {c['name']: c for c in caps if c['name'].startswith('controller.')}
-            assert set(bridge) == {'controller.apply_decision', 'controller.get_result'}
+            assert set(bridge) == {'controller.apply_decision', 'controller.get_result', 'controller.snapshot'}
             assert bridge['controller.apply_decision']['class'] == 'exec'
             assert bridge['controller.get_result']['class'] == 'read'
+            assert bridge['controller.snapshot']['class'] == 'read'
             tools = (await relay.call({'list_tools': True}))['result']['tools']
             annotations = {t['name']: t['annotations'] for t in tools}
             assert annotations['invoke_exec']['destructiveHint'] and not annotations['invoke_exec']['readOnlyHint']
@@ -307,6 +322,106 @@ async def bounded_bad_backends():
         await ordinary_read(relay)
 
 
+async def snapshot_states():
+    from test_controller_snapshot import current_health
+    from datetime import UTC, datetime, timedelta
+    value, reader, agent, delivery = await fixtures.fixture(ROOT / 'snapshot')
+    health = current_health(value, ROOT / 'snapshot')
+    command = {'name': 'invoke_read', 'arguments': {'capability': 'controller.snapshot', 'args': {}}}
+    try:
+        async with Relay(ROOT / 'snapshot-relay', value.control_server.port) as relay:
+            before = {p.name: p.read_bytes() for p in (ROOT / 'snapshot').glob('runtime.sqlite3*')}
+            idle = facts(await relay.call(command))
+            assert idle['node_id'] == 'controller-bridge-fixture'
+            assert idle['health']['status'] == 'healthy'
+            assert idle['capacity'] == {'limit': 1, 'occupied': 0, 'available': 1}
+            assert idle['admission'] == 'not_evaluated' and not idle['runs']
+            assert idle['provider']['availability'] == 'unknown'
+            assert not reader.repo_reads and not agent.launch_requests and not delivery.publications
+            assert {p.name: p.read_bytes() for p in (ROOT / 'snapshot').glob('runtime.sqlite3*')} == before
+            bad = await relay.call({'name': 'invoke_read', 'arguments': {'capability': 'controller.snapshot', 'args': {'endpoint': 'ignored'}}})
+            assert bad['result']['_meta']['io.mcprelay/error']['code'] == 'invalid_args'
+            first = facts(await relay.call(invoke('controller.apply_decision')))
+            calls, reads = list(agent.calls), reader.repo_reads
+            health.heartbeat()
+            occupied = facts(await relay.call(command))
+            run = occupied['runs'][0]
+            assert run['run_id'] == first['receipt']['run_id'] and run['binding_id']
+            assert occupied['capacity']['occupied'] == 1 and occupied['capacity']['available'] == 0
+            assert run['workspace_owner_binding_id'] == run['binding_id']
+            assert run['provider_state'] == 'unresolved'
+            assert agent.calls == calls and reader.repo_reads == reads
+            await fixtures.finish(value, agent)
+            idle_binding = facts(await relay.call(command))
+            assert idle_binding['capacity']['occupied'] == 0 and not idle_binding['runs']
+            assert idle_binding['bindings'][0]['binding_id'] == run['binding_id']
+            assert idle_binding['bindings'][0]['workspace_owner_binding_id'] == run['binding_id']
+            # Incomplete publication ownership from existing durable fields.
+            db = value.store._require_db()
+            await db.execute('UPDATE agent_runs SET evidence_comment_id=NULL WHERE run_id=?', (run['run_id'],))
+            await db.commit()
+            pending = facts(await relay.call(command))
+            assert pending['runs'][0]['categories'] == ['pending_delivery']
+            assert pending['runs'][0]['result_owner_run_id'] == run['run_id']
+            assert len(agent.launch_requests) == len(delivery.publications) == 1
+            health.heartbeat(now=datetime.now(UTC) - timedelta(minutes=10))
+            stale = facts(await relay.call(command))
+            assert stale['health']['status'] == 'stale' and stale['capacity']['available'] is None
+            await value.store.close()
+            partial = facts(await relay.call(command))
+            assert partial['store']['status'] == 'unavailable'
+            assert partial['capacity']['occupied'] is None and 'STORE_UNAVAILABLE' in partial['partial']
+            assert partial['resource_summary'] is None and partial['agent_telemetry'] is None
+            assert len(json.dumps(partial).encode()) < 12 * 1024
+    finally:
+        await value.close()
+
+
+async def snapshot_bounds_and_reconnect():
+    from test_session_store import start, NOW, POLICY
+    value, _, agent, _ = await fixtures.fixture(ROOT / 'snapshot-bounds')
+    command = {'name': 'invoke_read', 'arguments': {'capability': 'controller.snapshot', 'args': {}}}
+    try:
+        for n in range(20):
+            directive = start(str(5000+n)).model_copy(update={"task_id": f"TASK-{100+n}"})
+            await value.store.claim_launch(directive, runtime_issue_number=140,
+                accepted_policy_commit=POLICY, model='gpt-6.1-sol', reasoning_effort='high', now=NOW)
+        for label in ('first', 'reconnected'):
+            async with Relay(ROOT / ('snapshot-bounds-' + label), value.control_server.port) as relay:
+                before = await value.store.count_unresolved_launches('owner/repo')
+                result = facts(await relay.call(command))
+                assert result['truncated'] and len(result['runs']) == 8
+                assert result['capacity']['occupied'] == 20 and result['capacity']['available'] is None
+                assert result['health']['status'] == 'missing'
+                assert await value.store.count_unresolved_launches('owner/repo') == before
+                assert not agent.calls and not agent.launch_requests
+                assert len(json.dumps(result).encode()) < 12 * 1024
+    finally:
+        await value.close()
+
+
+async def snapshot_unavailable_and_incompatible():
+    command = {'name': 'invoke_read', 'arguments': {'capability': 'controller.snapshot', 'args': {}}}
+    async def incompatible(reader, writer):
+        req = json.loads(await reader.readline())
+        writer.write((json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'result': {'secret': 'NEVER_FORWARD'}})+'\n').encode())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+    listener = await asyncio.start_server(incompatible, '127.0.0.1', 0)
+    try:
+        for label, port in [('unavailable', free_port()), ('incompatible', listener.sockets[0].getsockname()[1])]:
+            async with Relay(ROOT / ('snapshot-' + label), port, timeout=200) as relay:
+                reply = await relay.call(command)
+                assert reply['result']['_meta']['io.mcprelay/error']['code'] == 'controller_snapshot_unavailable'
+                assert facts(reply)['state'] == 'UNKNOWN'
+                assert 'NEVER_FORWARD' not in json.dumps(reply) and reply['call_ms'] < 2000
+                await ordinary_read(relay)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+
 async def main():
     scenarios = [
         ('default disabled / ordinary capability', default_off),
@@ -316,7 +431,12 @@ async def main():
         ('timeout unknown outcome + exact-reference reconciliation', timeout_reconciliation),
         ('client/bridge disconnect preserves local execution/result', disconnect_ownership),
         ('bounded malformed/unavailable backend + ordinary capability isolation', bounded_bad_backends),
+        ('snapshot actual MCP idle/occupied/pending/stale/unavailable + zero read effects', snapshot_states),
+        ('snapshot bounded unresolved ownership + missing health + Relay reconnect', snapshot_bounds_and_reconnect),
+        ('snapshot unavailable/incompatible Controller differs from healthy node', snapshot_unavailable_and_incompatible),
     ]
+    if args.snapshot_only:
+        scenarios = [(name, run) for name, run in scenarios if name.startswith('snapshot ')]
     try:
         for name, run in scenarios:
             start = time.monotonic()
