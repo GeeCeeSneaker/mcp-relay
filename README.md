@@ -60,3 +60,7 @@ A new development team should read, in order:
 10. `docs/adr/` (ADR-0001 baseline, ADR-0002 P0 refinement)
 
 The entire v1 execution program in `MASTER_IMPLEMENTATION_PLAN.md` is pre-authorized. Phase Work Orders under `docs/work_orders/` are durable handoff/checklist artifacts, not gates requiring Reviewer permission between every step.
+
+## Security audit records
+
+- [2026-10-23 security audit and maintenance recommendations](docs/security/SECURITY_AUDIT_2026-10-23.md): repository dependency findings, applicability checks and deployment verification still required.
